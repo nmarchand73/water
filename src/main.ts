@@ -17,6 +17,7 @@
  * - Drag on water: Add multiple ripples
  * - Drag on sphere: Move sphere
  * - Drag elsewhere: Rotate camera
+ * - Mouse wheel: Zoom in/out
  * - G key: Toggle gravity/physics on sphere
  * - L key (hold): Adjust light direction with camera
  * - Spacebar: Pause/resume simulation
@@ -131,6 +132,15 @@ async function init(): Promise<void> {
   let angleX = -25;
   /** Camera yaw angle in degrees */
   let angleY = -200.5;
+  /** Camera distance from center */
+  let distance = 4;
+
+  /** Target camera pitch (for damping) */
+  let targetAngleX = angleX;
+  /** Target camera yaw (for damping) */
+  let targetAngleY = angleY;
+  /** Target camera distance (for damping) */
+  let targetDistance = distance;
 
   /**
    * Computes the current view and projection matrices based on camera angles.
@@ -142,7 +152,7 @@ async function init(): Promise<void> {
 
     // Build view matrix: translate back, rotate, translate up
     const viewMatrix = mat4.identity();
-    mat4.translate(viewMatrix, [0, 0, -4], viewMatrix); // Camera distance
+    mat4.translate(viewMatrix, [0, 0, -distance], viewMatrix); // Camera distance
     mat4.rotateX(viewMatrix, (-angleX * Math.PI) / 180, viewMatrix); // Pitch
     mat4.rotateY(viewMatrix, (-angleY * Math.PI) / 180, viewMatrix); // Yaw
     mat4.translate(viewMatrix, [0, 0.5, 0], viewMatrix); // Look slightly above center
@@ -328,10 +338,18 @@ async function init(): Promise<void> {
    * Handles pointer down - determines interaction mode.
    * @param x - Pointer X position in canvas coordinates
    * @param y - Pointer Y position in canvas coordinates
+   * @param button - Pointer button (0=left, 2=right)
    */
-  function startDrag(x: number, y: number): void {
+  function startDrag(x: number, y: number, button: number): void {
     oldX = x;
     oldY = y;
+
+    // Right click always orbits
+    if (button === 2) {
+      mode = InteractionMode.OrbitCamera;
+      return;
+    }
+
     const { projectionMatrix, viewMatrix } = getMatrices();
     const tracer = new Raytracer(viewMatrix, projectionMatrix, getViewport());
     const ray = tracer.getRayForPixel(x * ratio, y * ratio);
@@ -370,9 +388,9 @@ async function init(): Promise<void> {
   function duringDrag(x: number, y: number): void {
     if (mode === InteractionMode.OrbitCamera) {
       // Rotate camera based on pointer delta
-      angleY -= x - oldX;
-      angleX -= y - oldY;
-      angleX = Math.max(-89.999, Math.min(89.999, angleX)); // Clamp pitch
+      targetAngleY -= x - oldX;
+      targetAngleX -= y - oldY;
+      targetAngleX = Math.max(-89.999, Math.min(89.999, targetAngleX)); // Clamp pitch
     } else if (mode === InteractionMode.MoveSphere) {
       // Move sphere along drag plane
       const { projectionMatrix, viewMatrix } = getMatrices();
@@ -416,10 +434,13 @@ async function init(): Promise<void> {
 
   // Pointer event listeners (unified mouse/touch/pen input)
   canvas.addEventListener('pointerdown', (e) => {
+    if (e.button === 1) return; // Ignore middle click
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId); // Capture pointer for smooth dragging
-    startDrag(e.offsetX, e.offsetY);
+    startDrag(e.offsetX, e.offsetY, e.button);
   });
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   canvas.addEventListener('pointermove', (e) => {
     if (mode !== InteractionMode.None) {
@@ -436,6 +457,17 @@ async function init(): Promise<void> {
     canvas.releasePointerCapture(e.pointerId);
     stopDrag();
   });
+
+  // Wheel event for zooming
+  canvas.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      targetDistance += e.deltaY * 0.005;
+      targetDistance = Math.max(1.5, Math.min(10, targetDistance));
+    },
+    { passive: false }
+  );
 
   // --- Rendering ---
 
@@ -518,6 +550,11 @@ async function init(): Promise<void> {
     let seconds = (time - prevTime) / 1000;
     prevTime = time;
     if (seconds > 1) seconds = 1; // Cap delta time to prevent physics explosion
+
+    // Smoothly interpolate camera towards targets (damping)
+    angleX += (targetAngleX - angleX) * 0.15;
+    angleY += (targetAngleY - angleY) * 0.15;
+    distance += (targetDistance - distance) * 0.15;
 
     // Update light direction if L key is held or Follow Camera is enabled
     if (keys['L'] || settings.followCamera) {
