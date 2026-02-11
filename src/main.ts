@@ -255,8 +255,8 @@ async function init(): Promise<void> {
   const gui = new GUI({ title: 'Settings' });
   gui.close(); // Collapse by default
 
-  const sceneFolder = gui.addFolder('Scene');
   const objectFolder = gui.addFolder('Object');
+  const sceneFolder = gui.addFolder('Scene');
 
   const settings = {
     gravity: useSpherePhysics,
