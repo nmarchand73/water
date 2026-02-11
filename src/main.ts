@@ -255,27 +255,31 @@ async function init(): Promise<void> {
   const gui = new GUI({ title: 'Settings' });
   gui.close(); // Collapse by default
 
+  const sceneFolder = gui.addFolder('Scene');
+  const objectFolder = gui.addFolder('Object');
+
   const settings = {
     gravity: useSpherePhysics,
     followCamera: false,
-    showSphere: true,
+    object: 'Sphere',
     useDensity: false,
     density: 0.9,
   };
 
-  gui
-    .add(settings, 'showSphere')
-    .name('Render Sphere')
-    .onChange((v: boolean) => {
-      // Update shadow flags when sphere visibility changes: rim=1, sphere=v, ao=1
+  objectFolder
+    .add(settings, 'object', ['Sphere', 'None'])
+    .name('Object')
+    .onChange((v: string) => {
+      const isVisible = v === 'Sphere';
+      // Update shadow flags when sphere visibility changes: rim=1, sphere=isVisible, ao=1
       device.queue.writeBuffer(
         shadowUniformBuffer,
         0,
-        new Float32Array([1.0, v ? 1.0 : 0.0, 1.0, 0.0])
+        new Float32Array([1.0, isVisible ? 1.0 : 0.0, 1.0, 0.0])
       );
       (document.activeElement as HTMLElement)?.blur();
     });
-  const gravityController = gui
+  const gravityController = objectFolder
     .add(settings, 'gravity')
     .name('Toggle Gravity')
     .onChange((v: boolean) => {
@@ -283,7 +287,7 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
 
-  const densityCheckbox = gui
+  const densityCheckbox = objectFolder
     .add(settings, 'useDensity')
     .name('Enable Density')
     .onChange(() => {
@@ -291,9 +295,9 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
 
-  const densitySlider = gui
+  const densitySlider = objectFolder
     .add(settings, 'density', 0.2, 2.0, 0.1)
-    .name('Sphere Density')
+    .name('Density')
     .onChange(() => {
       (document.activeElement as HTMLElement)?.blur();
     });
@@ -308,7 +312,7 @@ async function init(): Promise<void> {
   // Initialize density control visibility
   updateDensityVisibility();
 
-  gui
+  sceneFolder
     .add(settings, 'followCamera')
     .name('Light From Camera')
     .onChange(() => {
@@ -388,7 +392,7 @@ async function init(): Promise<void> {
     const ray = tracer.getRayForPixel(x * ratio, y * ratio);
 
     // Check if clicking on sphere (only if visible)
-    const sphereHit = settings.showSphere
+    const sphereHit = settings.object === 'Sphere'
       ? Raytracer.hitTestSphere(tracer.eye, ray, center, radius)
       : null;
     if (sphereHit) {
@@ -706,7 +710,7 @@ async function init(): Promise<void> {
         sphere.update(center.toArray(), radius);
       }
 
-      if (settings.showSphere) {
+      if (settings.object === 'Sphere') {
         // Update water displacement from sphere movement
         water.moveSphere(oldCenter.toArray(), center.toArray(), radius);
       }
@@ -748,7 +752,7 @@ async function init(): Promise<void> {
 
     // Render scene objects
     pool.render(passEncoder, water.textureA, water.sampler, water.causticsTexture);
-    if (settings.showSphere) {
+    if (settings.object === 'Sphere') {
       sphere.render(passEncoder, water.textureA, water.sampler, water.causticsTexture);
     }
     water.renderSurface(passEncoder);
