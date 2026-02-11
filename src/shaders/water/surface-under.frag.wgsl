@@ -17,7 +17,6 @@
 
 // Physical constants
 const IOR_AIR : f32 = 1.0;
-const IOR_WATER : f32 = 1.333;
 const ABOVEwaterColor : vec3f = vec3f(0.25, 1.0, 1.25);
 const UNDERwaterColor : vec3f = vec3f(0.4, 0.9, 1.0);
 
@@ -103,6 +102,7 @@ fn getWallColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32, poolHeight: f32) -> 
 fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     var color : vec3f;
     let poolHeight = 1.0;
+    let IOR_WATER = waterUniforms.ior;
 
     // Check sphere intersection first (only if sphere is enabled)
     var q = 1.0e6;
@@ -161,8 +161,8 @@ fn fs_main(@location(0) worldPos : vec3f) -> @location(0) vec4f {
     // UNDERWATER VIEW: Looking up at water surface
     normal = -normal; // Flip normal for underwater
     let reflectedRay = reflect(incomingRay, normal);
-    let refractedRay = refract(incomingRay, normal, IOR_WATER / IOR_AIR);
-    let fresnel = mix(0.5, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
+    let refractedRay = refract(incomingRay, normal, waterUniforms.ior / IOR_AIR);
+    let fresnel = mix(waterUniforms.fresnelMin, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
 
     let reflectedColor = getSurfaceRayColor(worldPos, reflectedRay, UNDERwaterColor);
     let refractedColor = getSurfaceRayColor(worldPos, refractedRay, vec3f(1.0)) * vec3f(0.8, 1.0, 1.1);

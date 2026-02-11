@@ -5,6 +5,7 @@
 @binding(0) @group(0) var<uniform> light : LightUniforms;
 @binding(1) @group(0) var<uniform> sphere : SphereUniforms;
 @binding(4) @group(0) var<uniform> shadows : ShadowUniforms;
+@binding(5) @group(0) var<uniform> water : WaterUniforms;
 @binding(2) @group(0) var waterSampler : sampler;
 @binding(3) @group(0) var waterTexture : texture_2d<f32>;
 
@@ -15,7 +16,7 @@ fn fs_main(@location(0) oldPos : vec3f, @location(1) newPos : vec3f, @location(2
     let oldArea = length(dpdx(oldPos)) * length(dpdy(oldPos));
     let newArea = length(dpdx(newPos)) * length(dpdy(newPos));
 
-    var intensity = oldArea / newArea * 0.2;
+    var intensity = oldArea / newArea * water.causticIntensity;
 
     // Calculate sphere shadow
     let IOR_AIR = 1.0;

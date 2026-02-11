@@ -159,6 +159,7 @@ export class Water {
    * @param lightUniformBuffer - Light direction buffer
    * @param sphereUniformBuffer - Sphere position/radius buffer
    * @param shadowUniformBuffer - Shadow toggle flags buffer
+   * @param waterUniformBuffer - Water rendering uniforms buffer
    * @param tileTexture - Pool tile texture
    * @param tileSampler - Tile texture sampler
    * @param skyTexture - Skybox cubemap texture
@@ -172,6 +173,7 @@ export class Water {
     lightUniformBuffer: GPUBuffer,
     sphereUniformBuffer: GPUBuffer,
     shadowUniformBuffer: GPUBuffer,
+    waterUniformBuffer: GPUBuffer,
     tileTexture: GPUTexture,
     tileSampler: GPUSampler,
     skyTexture: GPUTexture,
@@ -186,16 +188,11 @@ export class Water {
     this.lightUniformBuffer = lightUniformBuffer;
     this.sphereUniformBuffer = sphereUniformBuffer;
     this.shadowUniformBuffer = shadowUniformBuffer;
+    this.waterUniformBuffer = waterUniformBuffer;
     this.tileTexture = tileTexture;
     this.tileSampler = tileSampler;
     this.skyTexture = skyTexture;
     this.skySampler = skySampler;
-
-    // Create water uniform buffer (density)
-    this.waterUniformBuffer = this.device.createBuffer({
-      size: 16, // density (4) + padding (12)
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
 
     // Create double-buffered simulation textures
     this.textureA = this.createTexture();
@@ -764,6 +761,7 @@ export class Water {
         { binding: 2, resource: this.sampler },
         { binding: 3, resource: this.textureA.createView() },
         { binding: 4, resource: { buffer: this.shadowUniformBuffer } },
+        { binding: 5, resource: { buffer: this.waterUniformBuffer } },
       ],
     });
 
@@ -790,11 +788,23 @@ export class Water {
   }
 
   /**
-   * Updates the water density uniform buffer.
+   * Updates the water rendering uniform buffer.
    *
    * @param density - Water density (absorption coefficient)
+   * @param causticIntensity - Intensity of caustics
+   * @param ior - Index of refraction
+   * @param fresnelMin - Minimum fresnel reflection
    */
-  updateDensity(density: number): void {
-    this.device.queue.writeBuffer(this.waterUniformBuffer, 0, new Float32Array([density]));
+  updateWaterParameters(
+    density: number,
+    causticIntensity: number,
+    ior: number,
+    fresnelMin: number
+  ): void {
+    this.device.queue.writeBuffer(
+      this.waterUniformBuffer,
+      0,
+      new Float32Array([density, causticIntensity, ior, fresnelMin])
+    );
   }
 }

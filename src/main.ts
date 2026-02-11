@@ -186,6 +186,12 @@ async function init(): Promise<void> {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  // Water rendering uniforms (density, causticIntensity, ior, fresnelMin)
+  const waterUniformBuffer = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
   // --- Lighting ---
 
   /** Current light direction (normalized) */
@@ -228,6 +234,7 @@ async function init(): Promise<void> {
     lightUniformBuffer,
     sphereUniformBuffer,
     shadowUniformBuffer,
+    waterUniformBuffer,
     tileTexture,
     tileSampler,
     skyTexture,
@@ -244,8 +251,6 @@ async function init(): Promise<void> {
   const radius = 0.25;
   /** Current sphere velocity */
   let velocity = new Vector();
-  /** Gravity acceleration vector */
-  const gravity = new Vector(0, -15, 0);
   /** Whether physics (gravity/buoyancy) is enabled */
   let useSpherePhysics = false;
   /** Whether simulation is paused */
@@ -255,6 +260,7 @@ async function init(): Promise<void> {
   const gui = new GUI({ title: 'Settings' });
   gui.close(); // Collapse by default
 
+  const waterFolder = gui.addFolder('Water');
   const objectFolder = gui.addFolder('Object');
   const sceneFolder = gui.addFolder('Scene');
 
@@ -264,6 +270,9 @@ async function init(): Promise<void> {
     object: 'Sphere',
     useDensity: false,
     density: 0.9,
+    causticsIntensity: 0.2,
+    ior: 1.333,
+    fresnelMin: 0.25,
   };
 
   objectFolder
@@ -287,7 +296,7 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
 
-  const densityCheckbox = objectFolder
+  objectFolder
     .add(settings, 'useDensity')
     .name('Enable Density')
     .onChange(() => {
@@ -315,6 +324,27 @@ async function init(): Promise<void> {
   sceneFolder
     .add(settings, 'followCamera')
     .name('Light From Camera')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  waterFolder
+    .add(settings, 'causticsIntensity', 0.0, 1.0, 0.01)
+    .name('Caustics')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  waterFolder
+    .add(settings, 'ior', 1.0, 1.5, 0.001)
+    .name('Refraction')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  waterFolder
+    .add(settings, 'fresnelMin', 0.0, 1.0, 0.01)
+    .name('Reflection')
     .onChange(() => {
       (document.activeElement as HTMLElement)?.blur();
     });
@@ -661,6 +691,15 @@ async function init(): Promise<void> {
       updateLight();
     }
 
+    // Update water rendering uniforms (density, caustics, IOR, fresnel)
+    // Do this before simulation steps so caustics update uses correct values
+    water.updateWaterParameters(
+      settings.useDensity ? settings.density : 0.0,
+      settings.causticsIntensity,
+      settings.ior,
+      settings.fresnelMin
+    );
+
     if (!paused) {
       // --- Physics Update ---
 
@@ -723,10 +762,6 @@ async function init(): Promise<void> {
       water.updateNormals();
       water.updateCaustics();
     }
-
-    // Update water rendering uniforms (density)
-    // If density is disabled, we use 0 to disable absorption effect in shader
-    water.updateDensity(settings.useDensity ? settings.density : 0.0);
 
     // Update camera uniforms
     updateUniforms();

@@ -27,6 +27,9 @@ struct ShadowUniforms {
 // Water rendering uniforms
 struct WaterUniforms {
     density : f32,
+    causticIntensity : f32,
+    ior : f32,
+    fresnelMin : f32,
 }
 
 // Pool uniforms (camera matrices and eye position)
