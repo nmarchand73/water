@@ -245,7 +245,7 @@ async function init(): Promise<void> {
   /** Current sphere velocity */
   let velocity = new Vector();
   /** Gravity acceleration vector */
-  const gravity = new Vector(0, -4, 0);
+  const gravity = new Vector(0, -15, 0);
   /** Whether physics (gravity/buoyancy) is enabled */
   let useSpherePhysics = false;
   /** Whether simulation is paused */
@@ -259,6 +259,8 @@ async function init(): Promise<void> {
     gravity: useSpherePhysics,
     followCamera: false,
     showSphere: true,
+    useDensity: false,
+    density: 0.9,
   };
 
   gui
@@ -280,6 +282,32 @@ async function init(): Promise<void> {
       useSpherePhysics = v;
       (document.activeElement as HTMLElement)?.blur();
     });
+
+  const densityCheckbox = gui
+    .add(settings, 'useDensity')
+    .name('Enable Density')
+    .onChange(() => {
+      updateDensityVisibility();
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  const densitySlider = gui
+    .add(settings, 'density', 0.2, 2.0, 0.1)
+    .name('Density')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  /**
+   * Shows/hides density slider based on useDensity setting.
+   */
+  function updateDensityVisibility(): void {
+    densitySlider.show(settings.useDensity);
+  }
+
+  // Initialize density control visibility
+  updateDensityVisibility();
+
   gui
     .add(settings, 'followCamera')
     .name('Light From Camera')
@@ -638,12 +666,35 @@ async function init(): Promise<void> {
         // Apply gravity and buoyancy
         const percentUnderWater = Math.max(0, Math.min(1, (radius - center.y) / (2 * radius)));
 
-        // Gravity reduced by buoyancy when underwater
-        velocity = velocity.add(gravity.multiply(seconds - 1.1 * seconds * percentUnderWater));
-        // Water drag proportional to velocity squared
-        velocity = velocity.subtract(
-          velocity.unit().multiply(percentUnderWater * seconds * velocity.dot(velocity))
-        );
+        // Buoyancy factor: 1/density when density enabled, otherwise default 1.1
+        const buoyancyFactor = settings.useDensity ? 1.0 / settings.density : 1.1;
+
+        // Gravity and buoyancy (using -15 for more snappy "fast" physics)
+        const g = -15.0;
+        velocity.y += (g - buoyancyFactor * g * percentUnderWater) * seconds;
+
+        // Water drag proportional to velocity squared (when underwater)
+        if (velocity.length() > 0) {
+          velocity = velocity.subtract(
+            velocity.unit().multiply(percentUnderWater * seconds * velocity.dot(velocity) * 2.0)
+          );
+        }
+
+        // Air resistance (much smaller, time-dependent damping)
+        const airResistance = 0.1; // 10% velocity loss per second
+        const aboveWaterFactor = 1 - percentUnderWater;
+        velocity = velocity.multiply(1.0 - airResistance * seconds * aboveWaterFactor);
+
+        // Surface damping - energy loss when crossing water surface (splashing)
+        // Normalized to be frame-rate independent
+        const effectiveDensity = settings.useDensity ? settings.density : 1.0;
+        const distanceFromSurface = Math.abs(center.y);
+        const surfaceProximity = Math.max(0, 1 - distanceFromSurface / radius);
+        const baseDamping = 0.5; // Damping rate per second
+        const densityDamping = 0.5 * effectiveDensity;
+        const surfaceDamping = 1.0 - surfaceProximity * (baseDamping + densityDamping) * seconds;
+        velocity = velocity.multiply(Math.max(0, surfaceDamping));
+
         center = center.add(velocity.multiply(seconds));
 
         // Floor collision
@@ -667,6 +718,10 @@ async function init(): Promise<void> {
       water.updateNormals();
       water.updateCaustics();
     }
+
+    // Update water rendering uniforms (density)
+    // If density is disabled, we use 0 to disable absorption effect in shader
+    water.updateDensity(settings.useDensity ? settings.density : 0.0);
 
     // Update camera uniforms
     updateUniforms();

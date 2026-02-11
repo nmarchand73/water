@@ -13,6 +13,7 @@
 @binding(7) @group(0) var skySampler : sampler;
 @binding(8) @group(0) var skyTexture : texture_cube<f32>;
 @binding(9) @group(0) var causticTexture : texture_2d<f32>;
+@binding(11) @group(0) var<uniform> waterUniforms : WaterUniforms;
 
 // Physical constants
 const IOR_AIR : f32 = 1.0;

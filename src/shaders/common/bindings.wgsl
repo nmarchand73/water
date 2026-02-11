@@ -24,6 +24,11 @@ struct ShadowUniforms {
     ao : f32,       // Pool corner ambient occlusion
 }
 
+// Water rendering uniforms
+struct WaterUniforms {
+    density : f32,
+}
+
 // Pool uniforms (camera matrices and eye position)
 struct Uniforms {
   modelViewProjectionMatrix : mat4x4f,
