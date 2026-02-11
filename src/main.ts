@@ -42,13 +42,13 @@ async function init(): Promise<void> {
 
   const gpu = navigator.gpu;
   if (!gpu) {
-    document.getElementById('loading')!.innerHTML = 'WebGPU not supported.';
+    document.getElementById('loading')!.textContent = 'WebGPU not supported.';
     return;
   }
 
   const adapter = await gpu.requestAdapter();
   if (!adapter) {
-    document.getElementById('loading')!.innerHTML = 'No WebGPU adapter found.';
+    document.getElementById('loading')!.textContent = 'No WebGPU adapter found.';
     return;
   }
 
@@ -617,7 +617,8 @@ async function init(): Promise<void> {
     }
   });
 
-  document.getElementById('loading')!.innerHTML = '';
+  document.getElementById('loading')!.style.display = 'none';
+  document.body.classList.remove('loading');
   onResize();
 
   /**
