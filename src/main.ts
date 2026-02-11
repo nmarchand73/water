@@ -293,7 +293,7 @@ async function init(): Promise<void> {
 
   const densitySlider = gui
     .add(settings, 'density', 0.2, 2.0, 0.1)
-    .name('Density')
+    .name('Sphere Density')
     .onChange(() => {
       (document.activeElement as HTMLElement)?.blur();
     });
