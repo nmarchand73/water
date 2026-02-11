@@ -64,6 +64,9 @@ export class Water {
   /** Shadow toggle flags uniform buffer */
   private shadowUniformBuffer: GPUBuffer;
 
+  /** Water rendering uniforms (density) */
+  private waterUniformBuffer: GPUBuffer;
+
   /** Pool tile texture for refracted view */
   private tileTexture: GPUTexture;
 
@@ -187,6 +190,12 @@ export class Water {
     this.tileSampler = tileSampler;
     this.skyTexture = skyTexture;
     this.skySampler = skySampler;
+
+    // Create water uniform buffer (density)
+    this.waterUniformBuffer = this.device.createBuffer({
+      size: 16, // density (4) + padding (12)
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
     // Create double-buffered simulation textures
     this.textureA = this.createTexture();
@@ -553,6 +562,7 @@ export class Water {
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: 'cube' } },
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 11, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
 
@@ -648,6 +658,7 @@ export class Water {
         { binding: 8, resource: this.skyTexture.createView({ dimension: 'cube' }) },
         { binding: 9, resource: this.causticsTexture.createView() },
         { binding: 10, resource: { buffer: this.shadowUniformBuffer } },
+        { binding: 11, resource: { buffer: this.waterUniformBuffer } },
       ],
     });
 
@@ -776,5 +787,14 @@ export class Water {
     pass.end();
 
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Updates the water density uniform buffer.
+   *
+   * @param density - Water density (absorption coefficient)
+   */
+  updateDensity(density: number): void {
+    this.device.queue.writeBuffer(this.waterUniformBuffer, 0, new Float32Array([density]));
   }
 }
