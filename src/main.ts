@@ -327,6 +327,11 @@ async function init(): Promise<void> {
   /** Plane normal for sphere dragging */
   let planeNormal: Vector;
 
+  /** Active pointers for multi-touch handling */
+  const activePointers = new Map<number, { x: number; y: number }>();
+  /** Previous pinch distance for zoom calculation */
+  let lastPinchDistance = 0;
+
   /**
    * Gets the current viewport as [x, y, width, height].
    */
@@ -432,30 +437,91 @@ async function init(): Promise<void> {
     mode = InteractionMode.None;
   }
 
+  /**
+   * Calculates the distance between two pointers (for pinch-to-zoom).
+   */
+  function getPinchDistance(): number {
+    const pointers = Array.from(activePointers.values());
+    if (pointers.length < 2) return 0;
+    const dx = pointers[0].x - pointers[1].x;
+    const dy = pointers[0].y - pointers[1].y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
   // Pointer event listeners (unified mouse/touch/pen input)
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button === 1) return; // Ignore middle click
     e.preventDefault();
-    canvas.setPointerCapture(e.pointerId); // Capture pointer for smooth dragging
-    startDrag(e.offsetX, e.offsetY, e.button);
+    canvas.setPointerCapture(e.pointerId);
+
+    // Track this pointer
+    activePointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+
+    // If this is the second finger, switch to pinch mode and record initial distance
+    if (activePointers.size === 2) {
+      mode = InteractionMode.None; // Cancel any single-finger interaction
+      lastPinchDistance = getPinchDistance();
+      return;
+    }
+
+    // Only start drag interaction if this is the first/only pointer
+    if (activePointers.size === 1) {
+      startDrag(e.offsetX, e.offsetY, e.button);
+    }
   });
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   canvas.addEventListener('pointermove', (e) => {
-    if (mode !== InteractionMode.None) {
+    // Update pointer position in our tracking map
+    if (activePointers.has(e.pointerId)) {
+      activePointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+    }
+
+    // Handle pinch-to-zoom with two fingers
+    if (activePointers.size === 2) {
+      const currentDistance = getPinchDistance();
+      if (lastPinchDistance > 0) {
+        const delta = lastPinchDistance - currentDistance;
+        targetDistance += delta * 0.01;
+        targetDistance = Math.max(1.5, Math.min(10, targetDistance));
+      }
+      lastPinchDistance = currentDistance;
+      return;
+    }
+
+    // Single pointer drag
+    if (mode !== InteractionMode.None && activePointers.size === 1) {
       duringDrag(e.offsetX, e.offsetY);
     }
   });
 
   canvas.addEventListener('pointerup', (e) => {
     canvas.releasePointerCapture(e.pointerId);
-    stopDrag();
+    activePointers.delete(e.pointerId);
+
+    // Reset pinch state
+    if (activePointers.size < 2) {
+      lastPinchDistance = 0;
+    }
+
+    // Only fully stop drag when all pointers are released
+    if (activePointers.size === 0) {
+      stopDrag();
+    }
   });
 
   canvas.addEventListener('pointercancel', (e) => {
     canvas.releasePointerCapture(e.pointerId);
-    stopDrag();
+    activePointers.delete(e.pointerId);
+
+    if (activePointers.size < 2) {
+      lastPinchDistance = 0;
+    }
+
+    if (activePointers.size === 0) {
+      stopDrag();
+    }
   });
 
   // Wheel event for zooming
