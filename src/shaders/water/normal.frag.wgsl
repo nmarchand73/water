@@ -22,9 +22,9 @@ struct SimParams {
 fn fs_main(@location(0) uv : vec2f) -> @location(0) vec4f {
   var info = textureSample(waterTexture, waterSampler, uv);
 
-  // Sample neighboring heights to compute gradient
-  let val_dx = textureSample(waterTexture, waterSampler, vec2f(uv.x + u.delta.x, uv.y)).r;
-  let val_dy = textureSample(waterTexture, waterSampler, vec2f(uv.x, uv.y + u.delta.y)).r;
+  // Sample neighboring heights (mirror at pool rim so edge normals match reflected wave sim)
+  let val_dx = textureSample(waterTexture, waterSampler, reflectPoolUv(vec2f(uv.x + u.delta.x, uv.y))).r;
+  let val_dy = textureSample(waterTexture, waterSampler, reflectPoolUv(vec2f(uv.x, uv.y + u.delta.y))).r;
 
   // World position: x,z = (uv - 0.5) * 2 * POOL_XZ_HALF, so ∂x/∂u = 2*POOL_XZ_HALF (world units per UV)
   let dWorld : f32 = 2.0 * scene.poolHalfExtent;

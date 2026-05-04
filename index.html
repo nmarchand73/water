@@ -239,7 +239,8 @@ Released under the MIT license
         local h) into velocity with gain <b>Wave response</b>, then advances height by integrating
         velocity. That is <b>explicit</b> integration of neighbor coupling (same structure as a discrete
         wave / diffusion formulation; compare to a leapfrog or implicit scheme in a PDE course). If the
-        gain is too large, the timestep blows up (classic stability bound); the slider cap prevents that.
+        gain is too large, the timestep can blow up; the shader clamps curvature and velocity so the
+        slider stays usable across its range.
         <b>Velocity damping</b> plays the role of viscosity and energy leaving the finite domain.
       </p>
       <p>

@@ -40,9 +40,12 @@ fn volumeInSphere(center : vec3f, uv : vec2f, radius : f32) -> f32 {
 fn fs_main(@location(0) uv : vec2f) -> @location(0) vec4f {
   var info = textureSample(waterTexture, waterSampler, uv);
 
-  // Water rises where sphere was, falls where sphere is now
-  info.r += volumeInSphere(u.oldCenter, uv, u.radius);
-  info.r -= volumeInSphere(u.newCenter, uv, u.radius);
+  // Water rises where sphere was, falls where sphere is now (delta capped per texel / frame).
+  let disp =
+    volumeInSphere(u.oldCenter, uv, u.radius) - volumeInSphere(u.newCenter, uv, u.radius);
+  info.r += clamp(disp, -MAX_SPHERE_DISPLACE_DELTA, MAX_SPHERE_DISPLACE_DELTA);
+  // Hard cap: violent bounces can add a large local delta in one pass
+  info.r = clamp(info.r, -MAX_WATER_SIM_HEIGHT, MAX_WATER_SIM_HEIGHT);
 
   return info;
 }

@@ -16,8 +16,17 @@ export const DEFAULT_BALL_RADIUS = 0.25;
 /** UFO mesh / physics / water proxy scale vs the shared "ball radius" slider (33% larger). */
 export const UFO_RADIUS_SCALE = 1.33;
 
-/** Max "Wave response" in the GUI - explicit heightfield step goes unstable above ~2 (NaNs / device lost). */
-export const MAX_WAVE_RESPONSE = 2.0;
+/**
+ * Max "Wave response" in the GUI. Keep modest — explicit heightfield steps amplify quickly once the
+ * Laplacian clamp allows larger neighborhoods to disagree (see MAX_WAVE_CURVATURE_STEP in WGSL).
+ */
+export const MAX_WAVE_RESPONSE = 1.08;
+
+/** Simulation substeps per frame (matches original “two passes” when set to 2). */
+export const WAVE_SIM_SUBSTEPS = 2;
+
+/** Prior behavior: two full wave updates per frame — used to scale per-substep impulse. */
+export const WAVE_LEGACY_STEPS_PER_FRAME = 2;
 
 /** @deprecated use DEFAULT_POOL_HALF_EXTENT */
 export const POOL_HALF_EXTENT = DEFAULT_POOL_HALF_EXTENT;

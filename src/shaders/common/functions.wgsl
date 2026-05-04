@@ -13,6 +13,23 @@ fn poolXZToFloorTileUv(xz : vec2f, halfExtent : f32) -> vec2f {
   return poolXZToUv(xz, halfExtent) * FLOOR_TILE_UV_REPEAT;
 }
 
+// Mirror UV into [0,1] for neighbor reads — approximate reflecting pool rim (Neumann / mirror height).
+fn reflectPoolUv(c : vec2f) -> vec2f {
+  var x = c.x;
+  var y = c.y;
+  if (x < 0.0) {
+    x = -x;
+  } else if (x > 1.0) {
+    x = 2.0 - x;
+  }
+  if (y < 0.0) {
+    y = -y;
+  } else if (y > 1.0) {
+    y = 2.0 - y;
+  }
+  return vec2f(x, y);
+}
+
 // Sim texture stores height in units tuned at this reference half-extent (see DEFAULT_POOL_HALF_EXTENT).
 // Without scaling, larger pools look "waveless" because the same sim amplitude spans more XZ meters.
 const REF_POOL_HALF_EXTENT : f32 = 2.0;
@@ -48,4 +65,25 @@ fn beerLambertTransmittance(distance : f32, strength : f32) -> vec3f {
 
 fn applyWaterAbsorption(rgb : vec3f, distance : f32, strength : f32) -> vec3f {
   return rgb * beerLambertTransmittance(distance, strength);
+}
+
+// --- Wave heightfield stability (R=height, G=vertical velocity in sim; B/A = normals in other passes) ---
+// Fast sphere motion can inject huge per-frame deltas; the explicit wave step can diverge to Inf/NaN
+// (black image, broken normals, or GPU timeout). Keep sim values bounded.
+const MAX_WATER_SIM_HEIGHT : f32 = 0.95;
+const MAX_WATER_SIM_VELOCITY : f32 = 3.85;
+
+// Caps neighbor-average minus center per step — kills positive-feedback spikes (update.frag.wgsl).
+const MAX_WAVE_CURVATURE_STEP : f32 = 0.068;
+
+// Max height change from sphere displacement pass in one frame (sphere.frag.wgsl).
+const MAX_SPHERE_DISPLACE_DELTA : f32 = 0.095;
+
+fn clampWaterSimRg(info : vec4f) -> vec4f {
+  return vec4f(
+    clamp(info.r, -MAX_WATER_SIM_HEIGHT, MAX_WATER_SIM_HEIGHT),
+    clamp(info.g, -MAX_WATER_SIM_VELOCITY, MAX_WATER_SIM_VELOCITY),
+    info.b,
+    info.a
+  );
 }

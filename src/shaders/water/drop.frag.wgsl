@@ -1,4 +1,5 @@
 #include "../common/bindings.wgsl"
+#include "../common/functions.wgsl"
 
 @group(0) @binding(0) var waterTexture : texture_2d<f32>;
 @group(0) @binding(1) var waterSampler : sampler;
@@ -29,6 +30,7 @@ fn fs_main(@location(0) uv : vec2f) -> @location(0) vec4f {
 
   // Add drop height to water surface (sim binding kept for shared layout with other sim passes)
   info.r += dropVal * u.strength + sim.sphereInject * 0.0 + scene.poolHalfExtent * 0.0;
+  info.r = clamp(info.r, -MAX_WATER_SIM_HEIGHT, MAX_WATER_SIM_HEIGHT);
 
   return info;
 }

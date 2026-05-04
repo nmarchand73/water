@@ -445,7 +445,9 @@ export class Water {
 
   /**
    * Updates GPU uniforms for wave simulation feel (sphere displacement strength,
-   * neighbor coupling, velocity damping). Safe to call every frame.
+   * per-substep Laplacian coupling, per-substep velocity damping).
+   * `waveResponse` / `damping` are per-substep values uploaded to the update shader (CPU applies the
+   * legacy 2×/frame impulse split across substeps; no frame-dt multiplier).
    */
   setSimulationParams(sphereInject: number, waveResponse: number, damping: number): void {
     const data = new Float32Array([sphereInject, waveResponse, damping, 0]);

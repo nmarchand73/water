@@ -7,7 +7,7 @@
  *
  * Features:
  * - Interactive water ripples (click/drag on water surface)
- * - Draggable sphere with physics (gravity, buoyancy)
+ * - Draggable sphere with physics (gravity, buoyancy from submerged volume, pool collisions)
  * - Orbit camera controls (drag on empty space)
  * - Dynamic lighting (hold L key to adjust light direction)
  * - Pause/resume simulation (spacebar)
@@ -39,6 +39,8 @@ import {
   DEFAULT_POOL_RIM_MAX_Y,
   UFO_RADIUS_SCALE,
   MAX_WAVE_RESPONSE,
+  WAVE_LEGACY_STEPS_PER_FRAME,
+  WAVE_SIM_SUBSTEPS,
 } from './scene-constants';
 import {
   DEFAULT_LINER_PRESET_ID,
@@ -47,6 +49,22 @@ import {
 } from './liner-presets';
 import ufoObjUrl from './shapes/UFO_Saucer.obj?url';
 import { fetchAndParseUfoObj } from './shapes/parse-ufo-obj';
+import {
+  buoyancyStrength,
+  DEFAULT_AIR_FILLED_SPHERE_DENSITY,
+  DEFAULT_AIR_FILLED_UFO_DENSITY,
+  INTERIOR_DENSE_SPHERE_DENSITY,
+  INTERIOR_DENSE_UFO_DENSITY,
+  INTERIOR_SOLID_SPHERE_DENSITY,
+  INTERIOR_SOLID_UFO_DENSITY,
+  RELATIVE_DENSITY_MAX,
+  RELATIVE_DENSITY_MIN,
+  resolvePoolCollisions,
+  submergedVolumeFraction,
+} from './sphere-physics';
+
+/** GUI interior presets (built-in ρ vs water); Custom uses the slider. */
+type InteriorPreset = 'Air-filled' | 'Solid' | 'Dense' | 'Custom';
 
 /**
  * Main initialization function.
@@ -321,10 +339,25 @@ async function init(): Promise<void> {
   /** Wave simulation tuning (Settings, Wave simulation folder). */
   const waveSim = {
     sphereInject: 0.1,
-    waveResponse: 1.0,
-    damping: 0.997,
+    /** Neighbor-coupling gain (per substep; shader clamps curvature / velocity). */
+    waveResponse: 0.48,
+    damping: 0.9974,
   };
   waveSim.waveResponse = Math.min(waveSim.waveResponse, MAX_WAVE_RESPONSE);
+
+  /**
+   * Per-substep GPU uniforms: no frame-dt scaling (matches original stable demo); curvature is
+   * clamped in the shader. Legacy 2×/frame impulse split across N substeps; damping split per substep.
+   */
+  function computeWaveStepUniforms(): {
+    waveResponseStep: number;
+    dampingStep: number;
+  } {
+    const waveResponseStep =
+      waveSim.waveResponse * (WAVE_LEGACY_STEPS_PER_FRAME / WAVE_SIM_SUBSTEPS);
+    const dampingStep = Math.pow(waveSim.damping, 1.0 / WAVE_SIM_SUBSTEPS);
+    return { waveResponseStep, dampingStep };
+  }
 
   const waveSimGui: {
     inject?: { updateDisplay: () => void };
@@ -333,7 +366,8 @@ async function init(): Promise<void> {
   } = {};
 
   function applyWaveSimulationParams(): void {
-    water.setSimulationParams(waveSim.sphereInject, waveSim.waveResponse, waveSim.damping);
+    const { waveResponseStep, dampingStep } = computeWaveStepUniforms();
+    water.setSimulationParams(waveSim.sphereInject, waveResponseStep, dampingStep);
     waveSimGui.inject?.updateDisplay();
     waveSimGui.wave?.updateDisplay();
     waveSimGui.damp?.updateDisplay();
@@ -378,8 +412,10 @@ async function init(): Promise<void> {
     gravity: useSpherePhysics,
     followCamera: false,
     object: 'Sphere',
-    useDensity: false,
-    density: 0.9,
+    useDensity: true,
+    /** Air-filled / Solid / Dense use preset ρ (sphere vs UFO); Custom uses the slider. */
+    interior: 'Solid' as InteriorPreset,
+    density: INTERIOR_SOLID_SPHERE_DENSITY,
     causticsIntensity: 0.2,
     ior: 1.333,
     fresnelMin: 0.25,
@@ -396,27 +432,77 @@ async function init(): Promise<void> {
 
   objectFolder
     .add(settings, 'useDensity')
-    .name('Enable Density')
+    .name('Use object density')
     .onChange(() => {
+      if (settings.useDensity) {
+        syncDensityFromInterior();
+      }
+      updateDensityVisibility();
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  const interiorController = objectFolder
+    .add(settings, 'interior', ['Air-filled', 'Solid', 'Dense', 'Custom'])
+    .name('Interior')
+    .onChange(() => {
+      syncDensityFromInterior();
       updateDensityVisibility();
       (document.activeElement as HTMLElement)?.blur();
     });
 
   const densitySlider = objectFolder
-    .add(settings, 'density', 0.2, 2.0, 0.1)
-    .name('Density')
+    .add(settings, 'density', RELATIVE_DENSITY_MIN, RELATIVE_DENSITY_MAX, 0.01)
+    .name('Rel. density (custom)')
     .onChange(() => {
+      settings.interior = 'Custom';
+      interiorController.updateDisplay();
       (document.activeElement as HTMLElement)?.blur();
     });
 
-  /**
-   * Shows/hides density slider based on useDensity setting.
-   */
-  function updateDensityVisibility(): void {
-    densitySlider.show(settings.useDensity);
+  /** Preset relative density for current object shape (Sphere vs UFO scales differ slightly). */
+  function interiorPresetDensityForObject(): number {
+    const ufo = settings.object === 'UFO';
+    switch (settings.interior as InteriorPreset) {
+      case 'Air-filled':
+        return ufo ? DEFAULT_AIR_FILLED_UFO_DENSITY : DEFAULT_AIR_FILLED_SPHERE_DENSITY;
+      case 'Solid':
+        return ufo ? INTERIOR_SOLID_UFO_DENSITY : INTERIOR_SOLID_SPHERE_DENSITY;
+      case 'Dense':
+        return ufo ? INTERIOR_DENSE_UFO_DENSITY : INTERIOR_DENSE_SPHERE_DENSITY;
+      default:
+        return settings.density;
+    }
   }
 
-  // Initialize density control visibility
+  /** ρ_object/ρ_water for physics + water shading when density mode is on. */
+  function effectiveObjectDensity(): number {
+    if (!settings.useDensity) {
+      return 1.0;
+    }
+    if ((settings.interior as InteriorPreset) === 'Custom') {
+      return settings.density;
+    }
+    return interiorPresetDensityForObject();
+  }
+
+  function syncDensityFromInterior(): void {
+    if ((settings.interior as InteriorPreset) !== 'Custom') {
+      settings.density = interiorPresetDensityForObject();
+    }
+    densitySlider.updateDisplay();
+  }
+
+  /**
+   * Interior row when density mode is on; custom slider only for Custom interior.
+   */
+  function updateDensityVisibility(): void {
+    interiorController.show(settings.useDensity);
+    const showCustom =
+      settings.useDensity && settings.interior === 'Custom';
+    densitySlider.show(showCustom);
+  }
+
+  syncDensityFromInterior();
   updateDensityVisibility();
 
   /** Visual + physics + water radius for the current object (UFO is scaled up vs sphere). */
@@ -446,6 +532,7 @@ async function init(): Promise<void> {
     .name('Object')
     .onChange((v: string) => {
       const isVisible = v === 'Sphere' || v === 'UFO';
+      syncDensityFromInterior();
       // Update shadow flags when sphere visibility changes: rim=1, sphere=isVisible, ao=1
       device.queue.writeBuffer(
         shadowUniformBuffer,
@@ -602,7 +689,7 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
   waveSimGui.wave = waveSimFolder
-    .add(waveSim, 'waveResponse', 0.4, MAX_WAVE_RESPONSE, 0.05)
+    .add(waveSim, 'waveResponse', 0.22, MAX_WAVE_RESPONSE, 0.025)
     .name('Wave response')
     .onChange(() => {
       applyWaveSimulationParams();
@@ -977,6 +1064,36 @@ async function init(): Promise<void> {
   onResize();
 
   /**
+   * Projects sphere motion into the wave heightfield. Fast bounces inject huge per-frame
+   * deltas; without scaling, the wave integrator can diverge (NaNs → black frame / GPU TDR).
+   * GPU passes also clamp sim height/velocity; we soften injection when speed is high.
+   */
+  function displaceWaterForSphereMotion(dt: number): void {
+    const r = effectiveObjectRadius();
+    const speed =
+      dt > 1e-8
+        ? Math.hypot(
+            center.x - oldCenter.x,
+            center.y - oldCenter.y,
+            center.z - oldCenter.z
+          ) / dt
+        : 0;
+    const injectAtten = Math.min(1 / (1 + speed * 0.42), 0.92);
+    const { waveResponseStep, dampingStep } = computeWaveStepUniforms();
+    water.setSimulationParams(
+      waveSim.sphereInject * injectAtten,
+      waveResponseStep,
+      dampingStep
+    );
+    water.moveSphere(oldCenter.toArray(), center.toArray(), r);
+    water.setSimulationParams(
+      waveSim.sphereInject,
+      waveResponseStep,
+      dampingStep
+    );
+  }
+
+  /**
    * Updates the common uniform buffer with current camera matrices.
    */
   function updateUniforms(): void {
@@ -1019,7 +1136,7 @@ async function init(): Promise<void> {
     // Update water rendering uniforms (density, caustics, IOR, fresnel)
     // Do this before simulation steps so caustics update uses correct values
     water.updateWaterParameters(
-      settings.useDensity ? settings.density : 0.0,
+      settings.useDensity ? effectiveObjectDensity() : 0.0,
       settings.causticsIntensity,
       settings.ior,
       settings.fresnelMin
@@ -1032,69 +1149,61 @@ async function init(): Promise<void> {
         // User is dragging sphere - stop physics
         velocity = new Vector();
       } else if (useSpherePhysics) {
-        // Apply gravity and buoyancy
         const r = effectiveObjectRadius();
-        const percentUnderWater = Math.max(
-          0,
-          Math.min(
-            1,
-            (r - center.y) / (2 * r)
-          )
-        );
+        // Fraction of sphere volume below y = 0 (Archimedes buoyancy uses this, not a linear height blend)
+        const fSub = submergedVolumeFraction(center.y, r);
+        const buoy = buoyancyStrength(effectiveObjectDensity(), settings.useDensity);
 
-        // Buoyancy factor: 1/density when density enabled, otherwise default 1.1
-        const buoyancyFactor = settings.useDensity ? 1.0 / settings.density : 1.1;
-
-        // Gravity and buoyancy (using -15 for more snappy "fast" physics)
+        // Net vertical acceleration: gravity minus buoyancy proportional to submerged volume
         const g = -15.0;
-        velocity.y += (g - buoyancyFactor * g * percentUnderWater) * seconds;
+        velocity.y += g * (1.0 - buoy * fSub) * seconds;
 
-        // Water drag proportional to velocity squared (when underwater)
-        if (velocity.length() > 0) {
-          velocity = velocity.subtract(
-            velocity.unit().multiply(percentUnderWater * seconds * velocity.dot(velocity) * 2.0)
-          );
+        // Quadratic fluid drag (stronger when more volume is submerged)
+        if (velocity.length() > 1e-8) {
+          const dragMag = fSub * seconds * velocity.dot(velocity) * 2.4;
+          velocity = velocity.subtract(velocity.unit().multiply(dragMag));
         }
 
-        // Air resistance (much smaller, time-dependent damping)
-        const airResistance = 0.1; // 10% velocity loss per second
-        const aboveWaterFactor = 1 - percentUnderWater;
-        velocity = velocity.multiply(1.0 - airResistance * seconds * aboveWaterFactor);
+        // Air resistance on the out-of-water portion (approximated by 1 - submerged fraction)
+        const airResistance = 0.11;
+        const inAir = Math.max(0, 1 - fSub);
+        velocity = velocity.multiply(1.0 - airResistance * seconds * inAir);
 
-        // Surface damping - energy loss when crossing water surface (splashing)
-        // Normalized to be frame-rate independent
-        const effectiveDensity = settings.useDensity ? settings.density : 1.0;
+        // Surface interaction damping near y = 0 (splash / bob)
+        const effectiveDensity = settings.useDensity
+          ? effectiveObjectDensity()
+          : 1.0;
         const distanceFromSurface = Math.abs(center.y);
-        const surfaceProximity = Math.max(
-          0,
-          1 - distanceFromSurface / r
-        );
-        const baseDamping = 0.5; // Damping rate per second
-        const densityDamping = 0.5 * effectiveDensity;
+        const surfaceProximity = Math.max(0, 1 - distanceFromSurface / r);
+        const baseDamping = 0.48;
+        const densityDamping = 0.48 * effectiveDensity;
         const surfaceDamping = 1.0 - surfaceProximity * (baseDamping + densityDamping) * seconds;
         velocity = velocity.multiply(Math.max(0, surfaceDamping));
 
         center = center.add(velocity.multiply(seconds));
 
-        // Floor collision
-        if (center.y < r - sceneDims.poolDepth) {
-          center.y = r - sceneDims.poolDepth;
-          velocity.y = Math.abs(velocity.y) * 0.7; // Bounce with energy loss
-        }
+        resolvePoolCollisions(center, velocity, r, {
+          halfExtent: sceneDims.poolHalfExtent,
+          depth: sceneDims.poolDepth,
+        });
       }
 
       if (objectIsSolid()) {
-        // Update water displacement from sphere movement
-        water.moveSphere(oldCenter.toArray(), center.toArray(), effectiveObjectRadius());
+        displaceWaterForSphereMotion(seconds);
       }
       oldCenter = center.clone();
 
-      // Run water simulation (twice per frame for smoother waves)
-      water.stepSimulation();
-      water.stepSimulation();
+      // Wave heightfield: several substeps/frame; GPU uses 5-neighbor average + mirrored rim + curvature clamp.
+      {
+        const { waveResponseStep, dampingStep } = computeWaveStepUniforms();
+        water.setSimulationParams(waveSim.sphereInject, waveResponseStep, dampingStep);
+        for (let s = 0; s < WAVE_SIM_SUBSTEPS; s++) {
+          water.stepSimulation();
+        }
+      }
     } else if (mode === InteractionMode.MoveSphere && objectIsSolid()) {
       // Simulation paused but user is dragging the sphere - still apply displacement so ripples show
-      water.moveSphere(oldCenter.toArray(), center.toArray(), effectiveObjectRadius());
+      displaceWaterForSphereMotion(seconds);
       oldCenter = center.clone();
     }
 
