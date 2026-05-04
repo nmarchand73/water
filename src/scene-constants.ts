@@ -7,6 +7,9 @@ export const DEFAULT_POOL_DEPTH = 1.0;
 /** Ray/AABB upper Y for rim-style effects (default matches original demo). */
 export const DEFAULT_POOL_RIM_MAX_Y = 2.0;
 
+/** Default Beer-Lambert absorption (aligns with `liner-presets` classic light blue when presets are used). */
+export const DEFAULT_WATER_ABSORPTION = 0.9;
+
 /** Default interactive sphere radius. */
 export const DEFAULT_BALL_RADIUS = 0.25;
 

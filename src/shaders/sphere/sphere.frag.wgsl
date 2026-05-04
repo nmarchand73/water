@@ -55,10 +55,10 @@ fn fs_main(@location(0) modelNormal : vec3f, @location(1) worldPos : vec3f) -> @
 
   color += diffuse;
 
-  // Apply underwater color tint
   if (point.y < waterHeightWorld(waterInfo.r, xzH)) {
-     let underwaterColor = vec3f(0.4, 0.9, 1.0);
-     color *= underwaterColor * 1.2;
+     color *= scene.underTint.rgb * 1.2;
+     let viewPath = length(point - commonUniforms.eyePosition);
+     color *= beerLambertTransmittance(viewPath, scene.waterAbsorption);
   }
 
   return vec4f(color, 1.0);

@@ -46,5 +46,8 @@ struct SceneParams {
   poolHalfExtent : f32, // horizontal half-size on X and Z (world units)
   poolDepth : f32,      // depth from water plane y=0 to floor (positive)
   poolRimMaxY : f32,    // ray/AABB upper Y for rim shadow (typically >= wall tops)
-  _pad : f32,
+  waterAbsorption : f32, // Beer-Lambert strength (0 = off, 1 = default extinction)
+  underTint : vec4f,    // xyz underwater colorization (w unused)
+  tileTint : vec4f,     // xyz multiply pool tile albedo (w unused)
+  aboveTint : vec4f,    // xyz volumetric tint above surface (w unused)
 }

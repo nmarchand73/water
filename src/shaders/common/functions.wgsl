@@ -31,3 +31,21 @@ fn intersectCube(origin: vec3f, ray: vec3f, cubeMin: vec3f, cubeMax: vec3f) -> v
   let tFar = min(min(t2.x, t2.y), t2.z);
   return vec2f(tNear, tFar);
 }
+
+// Beer-Lambert absorption in water: longer paths darken and shift blue-green (red absorbed faster).
+// Coefficients are artistic (world units = meters at default pool scale).
+fn waterExtinctionPerMeter() -> vec3f {
+  return vec3f(0.24, 0.075, 0.045);
+}
+
+fn beerLambertTransmittance(distance : f32, strength : f32) -> vec3f {
+  if (strength <= 0.0) {
+    return vec3f(1.0);
+  }
+  let sigma = waterExtinctionPerMeter() * strength;
+  return exp(-sigma * max(0.0, distance));
+}
+
+fn applyWaterAbsorption(rgb : vec3f, distance : f32, strength : f32) -> vec3f {
+  return rgb * beerLambertTransmittance(distance, strength);
+}

@@ -35,6 +35,8 @@ fn fs_main(@location(0) localPos : vec3f) -> @location(0) vec4f {
     wallColor = textureSampleLevel(tileTexture, tileSampler, poolXZToFloorTileUv(point.xz, xzHalf), 0.0).rgb;
   }
 
+  wallColor *= scene.tileTint.rgb;
+
   // Physical constants for light refraction
   let IOR_AIR = 1.0;
   let IOR_WATER = 1.333;
@@ -86,10 +88,11 @@ fn fs_main(@location(0) localPos : vec3f) -> @location(0) vec4f {
 
   var finalColor = wallColor * scale;
 
-  // Apply underwater color tint
+  // Apply underwater color tint + Beer-Lambert absorption along view ray in water
   if (point.y < waterHeightWorld(waterInfo.r, xzHalf)) {
-     let underwaterColor = vec3f(0.4, 0.9, 1.0);
-     finalColor *= underwaterColor * 1.2;
+     finalColor *= scene.underTint.rgb * 1.2;
+     let viewPath = length(point - uniforms.eyePosition);
+     finalColor *= beerLambertTransmittance(viewPath, scene.waterAbsorption);
   }
 
   return vec4f(finalColor, 1.0);

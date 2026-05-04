@@ -278,6 +278,15 @@ Released under the MIT license
         >). Shadows and rim terms are analytic shortcuts in the fragment shader instead of global
         illumination.
       </p>
+      <p>
+        <b>Depth absorption (Beer-Lambert):</b> in real water, light is absorbed along path length; red
+        is damped faster than blue, so deep views go darker and more cyan. The demo multiplies
+        <b>per-channel</b> transmittance exp(-sigma * distance) for the camera-to-surface path, the
+        surface-to-scene ray in water, and the view ray to pool tiles and the object when they are
+        underwater. <b>Depth absorption</b> in Settings (Water) scales that model: 0 turns it off, 1 is
+        the default strength, values above 1 exaggerate murk. This is not full volumetric multiple
+        scattering; it is a real-time single-segment tint.
+      </p>
 
       <h2>With unlimited GPU power</h2>
       <p>
@@ -290,8 +299,8 @@ Released under the MIT license
       </p>
       <p>
         On the light side, <b>path tracing</b> or photon mapping could replace analytic caustics;
-        <b>volumetric</b> absorption and scattering in the water (Beer-Lambert, single-scattering
-        integrals) would make depth and color more physical. <b>Dispersion</b>-correct water waves
+        <b>volumetric</b> multiple scattering and in-beam light stages would go beyond the screen-space
+        Beer-Lambert hint you can tune in Settings. <b>Dispersion</b>-correct water waves
         (frequency-dependent speed) and <b>foam / spray</b> from sheet breakup would need extra passes
         or particles. Grid resolution could jump by orders of magnitude with <b>adaptive refinement</b>
         near the object and shore.
@@ -302,7 +311,7 @@ Released under the MIT license
         <li>Draw on the water: ripples</li>
         <li>Drag background or <b>right-drag</b>: orbit camera, <b>Wheel</b>: zoom</li>
         <li><b>Space</b>: pause, <b>G</b>: gravity, <b>L</b> (hold): light from view</li>
-        <li>Drag sphere / UFO, <b>Settings</b>: object, water, pool, wave tuning</li>
+        <li>Drag sphere / UFO, <b>Settings</b>: object, water (caustics, depth absorption, IOR), pool, wave tuning</li>
         <li><b>Menu</b> (top-right): show or hide this panel</li>
       </ul>
       <p>

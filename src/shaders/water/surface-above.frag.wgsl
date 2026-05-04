@@ -18,8 +18,6 @@
 
 // Physical constants
 const IOR_AIR : f32 = 1.0;
-const ABOVEwaterColor : vec3f = vec3f(0.25, 1.0, 1.25);
-const UNDERwaterColor : vec3f = vec3f(0.4, 0.9, 1.0);
 
 // Horizontal disc at object center Y — UFO proxy in water rays (no full bounding sphere).
 fn intersectHorizontalDisc(origin: vec3f, ray: vec3f, discCenter: vec3f, discRadius: f32) -> f32 {
@@ -123,6 +121,8 @@ fn getWallColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32, poolHeight: f32) -> 
         wallColor = textureSampleLevel(tileTexture, tileSampler, poolXZToFloorTileUv(point.xz, xzH), 0.0).rgb;
     }
 
+    wallColor *= scene.tileTint.rgb;
+
     // Ambient occlusion
     var scale = 0.5;
     scale /= length(point);
@@ -153,6 +153,8 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     let xzH = scene.poolHalfExtent;
     let IOR_WATER = waterUniforms.ior;
 
+    var waterPath : f32 = 0.0;
+
     // Sphere: full analytical sphere. UFO: horizontal disc at center.y (same radius) so water
     // refraction shows the saucer without the old “ghost ball” above the mesh.
     var q = 1.0e6;
@@ -167,6 +169,7 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     }
 
     if (q < 1.0e6) {
+        waterPath = q;
         let hit = origin + ray * q;
         color = select(
             getSphereColor(hit, IOR_AIR, IOR_WATER),
@@ -176,27 +179,28 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     } else if (ray.y < 0.0) {
         // Ray going down - hit pool walls/floor
         let t = intersectCube(origin, ray, vec3f(-xzH, -poolHeight, -xzH), vec3f(xzH, scene.poolRimMaxY, xzH));
+        waterPath = t.y;
         color = getWallColor(origin + ray * t.y, IOR_AIR, IOR_WATER, poolHeight);
     } else {
         // Ray going up - hit walls or sky
         let t = intersectCube(origin, ray, vec3f(-xzH, -poolHeight, -xzH), vec3f(xzH, scene.poolRimMaxY, xzH));
         let hit = origin + ray * t.y;
         if (hit.y < 2.0 / 12.0) {
+            waterPath = t.y;
             color = getWallColor(hit, IOR_AIR, IOR_WATER, poolHeight);
         } else {
-            // Sample skybox
+            waterPath = min(t.y * 0.35, poolHeight * 2.5);
             color = textureSampleLevel(skyTexture, skySampler, ray, 0.0).rgb;
-            // Add sun specular highlight
             let sunDir = normalize(light.direction);
             let spec = pow(max(0.0, dot(sunDir, ray)), 5000.0);
             color += vec3f(spec) * vec3f(10.0, 8.0, 6.0);
         }
     }
 
-    // Apply underwater tint for downward rays
     if (ray.y < 0.0) {
         color *= waterColor;
     }
+    color *= beerLambertTransmittance(waterPath, scene.waterAbsorption);
     return color;
 }
 
@@ -224,10 +228,17 @@ fn fs_main(@location(0) worldPos : vec3f) -> @location(0) vec4f {
     let refractedRay = refract(incomingRay, normal, IOR_AIR / waterUniforms.ior);
     let fresnel = mix(waterUniforms.fresnelMin, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
 
-    let reflectedColor = getSurfaceRayColor(worldPos, reflectedRay, ABOVEwaterColor);
-    let refractedColor = getSurfaceRayColor(worldPos, refractedRay, ABOVEwaterColor);
+    let reflectedColor = getSurfaceRayColor(worldPos, reflectedRay, scene.aboveTint.rgb);
+    let refractedColor = getSurfaceRayColor(worldPos, refractedRay, scene.aboveTint.rgb);
 
-    let finalColor = mix(refractedColor, reflectedColor, fresnel);
+    var finalColor = mix(refractedColor, reflectedColor, fresnel);
+    // Only darken when the camera is underwater (same pass can be used near the surface)
+    let eyeInfo = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(commonUniforms.eyePosition.xz, scene.poolHalfExtent), 0.0);
+    let eyeWaterY = waterHeightWorld(eyeInfo.r, scene.poolHalfExtent);
+    if (commonUniforms.eyePosition.y < eyeWaterY) {
+        let camWaterDist = length(worldPos - commonUniforms.eyePosition);
+        finalColor *= beerLambertTransmittance(camWaterDist, scene.waterAbsorption);
+    }
 
     return vec4f(finalColor, 1.0);
 }

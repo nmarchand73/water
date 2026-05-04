@@ -40,6 +40,11 @@ import {
   UFO_RADIUS_SCALE,
   MAX_WAVE_RESPONSE,
 } from './scene-constants';
+import {
+  DEFAULT_LINER_PRESET_ID,
+  LINER_PRESETS,
+  type LinerPresetId,
+} from './liner-presets';
 import ufoObjUrl from './shapes/UFO_Saucer.obj?url';
 import { fetchAndParseUfoObj } from './shapes/parse-ufo-obj';
 
@@ -201,31 +206,48 @@ async function init(): Promise<void> {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // Pool / scene scale for GPU (`SceneParams`: halfExtent, depth, rimMaxY, pad)
+  // Pool / scene scale + liner-style water tints (`SceneParams`, see bindings.wgsl)
   const sceneParamsBuffer = device.createBuffer({
     label: 'SceneParams',
-    size: 16,
+    size: 64,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+
+  const defaultLiner = LINER_PRESETS[DEFAULT_LINER_PRESET_ID];
+
+  const linerAppearance = {
+    underTint: [...defaultLiner.underTint] as [number, number, number],
+    tileTint: [...defaultLiner.tileTint] as [number, number, number],
+    aboveTint: [...defaultLiner.aboveTint] as [number, number, number],
+  };
 
   const sceneDims = {
     poolHalfExtent: DEFAULT_POOL_HALF_EXTENT,
     poolDepth: DEFAULT_POOL_DEPTH,
     poolRimMaxY: DEFAULT_POOL_RIM_MAX_Y,
     ballRadius: DEFAULT_BALL_RADIUS,
+    waterAbsorption: defaultLiner.waterAbsorption,
   };
 
   function syncSceneParams(): void {
-    device.queue.writeBuffer(
-      sceneParamsBuffer,
-      0,
-      new Float32Array([
-        sceneDims.poolHalfExtent,
-        sceneDims.poolDepth,
-        sceneDims.poolRimMaxY,
-        0,
-      ])
-    );
+    const d = new Float32Array(16);
+    d[0] = sceneDims.poolHalfExtent;
+    d[1] = sceneDims.poolDepth;
+    d[2] = sceneDims.poolRimMaxY;
+    d[3] = sceneDims.waterAbsorption;
+    d[4] = linerAppearance.underTint[0];
+    d[5] = linerAppearance.underTint[1];
+    d[6] = linerAppearance.underTint[2];
+    d[7] = 1.0;
+    d[8] = linerAppearance.tileTint[0];
+    d[9] = linerAppearance.tileTint[1];
+    d[10] = linerAppearance.tileTint[2];
+    d[11] = 1.0;
+    d[12] = linerAppearance.aboveTint[0];
+    d[13] = linerAppearance.aboveTint[1];
+    d[14] = linerAppearance.aboveTint[2];
+    d[15] = 1.0;
+    device.queue.writeBuffer(sceneParamsBuffer, 0, d);
   }
   syncSceneParams();
 
@@ -342,6 +364,16 @@ async function init(): Promise<void> {
   const sceneFolder = gui.addFolder('Scene');
   const waveSimFolder = gui.addFolder('Wave simulation');
 
+  const linerPresetLabels = (Object.keys(LINER_PRESETS) as LinerPresetId[]).map(
+    (id) => LINER_PRESETS[id].label
+  );
+  const linerLabelToId = new Map(
+    (Object.keys(LINER_PRESETS) as LinerPresetId[]).map((id) => [
+      LINER_PRESETS[id].label,
+      id,
+    ])
+  );
+
   const settings = {
     gravity: useSpherePhysics,
     followCamera: false,
@@ -351,6 +383,7 @@ async function init(): Promise<void> {
     causticsIntensity: 0.2,
     ior: 1.333,
     fresnelMin: 0.25,
+    linerPreset: defaultLiner.label,
   };
 
   const gravityController = objectFolder
@@ -509,6 +542,41 @@ async function init(): Promise<void> {
     .add(settings, 'causticsIntensity', 0.0, 1.0, 0.01)
     .name('Caustics')
     .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  function applyLinerPreset(id: LinerPresetId): void {
+    const p = LINER_PRESETS[id];
+    linerAppearance.underTint[0] = p.underTint[0];
+    linerAppearance.underTint[1] = p.underTint[1];
+    linerAppearance.underTint[2] = p.underTint[2];
+    linerAppearance.tileTint[0] = p.tileTint[0];
+    linerAppearance.tileTint[1] = p.tileTint[1];
+    linerAppearance.tileTint[2] = p.tileTint[2];
+    linerAppearance.aboveTint[0] = p.aboveTint[0];
+    linerAppearance.aboveTint[1] = p.aboveTint[1];
+    linerAppearance.aboveTint[2] = p.aboveTint[2];
+    sceneDims.waterAbsorption = p.waterAbsorption;
+    syncSceneParams();
+    depthAbsorptionGui?.updateDisplay();
+  }
+
+  waterFolder
+    .add(settings, 'linerPreset', linerPresetLabels)
+    .name('Liner preset')
+    .onChange((label: string) => {
+      const id = linerLabelToId.get(label);
+      if (id) applyLinerPreset(id);
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  let depthAbsorptionGui: { updateDisplay: () => void } | undefined;
+
+  depthAbsorptionGui = waterFolder
+    .add(sceneDims, 'waterAbsorption', 0.0, 2.5, 0.05)
+    .name('Depth absorption')
+    .onChange(() => {
+      syncSceneParams();
       (document.activeElement as HTMLElement)?.blur();
     });
 
