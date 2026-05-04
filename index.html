@@ -162,6 +162,22 @@ Released under the MIT license
         #help:not(.collapsed) + #help-toggle {
           right: 212px;
         }
+        /*
+          Desktop uses --width: 170px; on phones that squeezes label + slider + number into one row
+          and the right-hand widgets clip (body is overflow:hidden). Use most of the viewport width.
+        */
+        .lil-gui.lil-auto-place,
+        .lil-gui.autoPlace {
+          left: max(8px, env(safe-area-inset-left, 0px)) !important;
+          top: max(10px, env(safe-area-inset-top, 0px)) !important;
+          --width: min(300px, calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+          max-width: calc(100vw - 16px) !important;
+        }
+        .lil-gui .lil-controller .lil-widget input[type='number'] {
+          min-width: 0;
+          max-width: 5.5rem;
+          box-sizing: border-box;
+        }
       }
       .help-body-scroll {
         flex: 1;
