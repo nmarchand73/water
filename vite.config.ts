@@ -1,9 +1,8 @@
 import { defineConfig } from 'vite';
 import glsl from 'vite-plugin-glsl';
 
-// Default `/` so `npm run dev`, `vite preview`, and local static servers resolve
-// `import.meta.env.BASE_URL` + assets correctly. GitHub Pages uses `npm run deploy`
-// which passes `--base /webgpu-water/` on the CLI (overrides this).
+// Default `/` for `npm run dev` and local preview. Production GitHub Pages builds must pass
+// `--base /<repo>/` (this repo: `/water/`) so `import.meta.env.BASE_URL` resolves textures/cubemap.
 export default defineConfig({
   base: '/',
   plugins: [
