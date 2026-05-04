@@ -20,7 +20,10 @@
     "vite-plugin-glsl": "^1.5.5"
   },
   "dependencies": {
+    "gpu-io": "^0.2.7",
     "lil-gui": "^0.21.0",
+    "three": "^0.170.0",
+    "threejs-components": "^0.0.19",
     "wgpu-matrix": "^3.4.0"
   }
 }

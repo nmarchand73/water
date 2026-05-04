@@ -21,20 +21,59 @@ export const INTERIOR_DENSE_UFO_DENSITY = 1.16;
  * Returns the fraction of sphere volume in y &lt; 0 (spherical cap), for buoyancy and drag.
  */
 export function submergedVolumeFraction(centerY: number, radius: number): number {
+  return submergedVolumeFractionBelowPlane(centerY, radius, 0);
+}
+
+/**
+ * Same spherical-cap fraction below a horizontal plane `planeY` (local water surface).
+ * Legacy flat surface uses `planeY = 0`.
+ */
+export function submergedVolumeFractionBelowPlane(
+  centerY: number,
+  radius: number,
+  planeY: number
+): number {
   const R = Math.max(1e-6, radius);
   const bottom = centerY - R;
   const top = centerY + R;
-  if (top <= 0) {
+  if (top <= planeY) {
     return 1;
   }
-  if (bottom >= 0) {
+  if (bottom >= planeY) {
     return 0;
   }
-  const h = -bottom; // cap height from the bottom of the sphere up to y = 0
+  const h = planeY - bottom; // cap height from sphere bottom up to the plane
   const hClamped = Math.max(0, Math.min(2 * R, h));
   const vCap = (Math.PI * hClamped * hClamped * (3 * R - hClamped)) / 3;
   const vSphere = (4 / 3) * Math.PI * R * R * R;
   return vCap / vSphere;
+}
+
+/**
+ * Sphere center Y such that the submerged volume fraction below horizontal plane `planeY`
+ * equals `targetFraction` (Archimedes equilibrium uses targetFraction ≈ ρ_object/ρ_water for ρ ≤ 1).
+ * Uses binary search; safe for light shells that should ride almost entirely above the surface.
+ */
+export function centerYForSubmergedFractionBelowPlane(
+  planeY: number,
+  radius: number,
+  targetFraction: number
+): number {
+  const R = Math.max(1e-6, radius);
+  const target = Math.max(0.001, Math.min(0.999, targetFraction));
+  // Submerged fraction decreases as center.y increases; bracket [lowY, highY] with f(low) > target > f(high)
+  let lo = planeY - 2.5 * R;
+  let hi = planeY + 1.5 * R;
+  for (let i = 0; i < 28; i++) {
+    const mid = (lo + hi) * 0.5;
+    const f = submergedVolumeFractionBelowPlane(mid, R, planeY);
+    if (f > target) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return (lo + hi) * 0.5;
 }
 
 /**

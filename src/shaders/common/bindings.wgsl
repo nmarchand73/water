@@ -11,13 +11,14 @@ struct LightUniforms {
    direction : vec3f,
 }
 
-// Sphere / buoy object: center + radius for physics; spin + shape for rendering only
+// Sphere / buoy object: center + radius for physics; spin + shape + wave tilt for rendering
 struct SphereUniforms {
   center : vec3f,
   radius : f32,
-  spinY : f32,       // radians, applied to UFO mesh (and ignored for sphere shading path)
+  spinY : f32,       // radians, Y spin (UFO fast; sphere slow — symmetric hull needs motion to read)
   shapeKind : f32,   // 0 = sphere, 1 = UFO (same bounding sphere for physics)
-  _pad : vec2f,
+  wavePitch : f32,   // radians, rotation about +X (follows dhdz / swell along Z)
+  waveRoll : f32,    // radians, rotation about +Z (follows dhdx / swell along X)
 }
 
 // Shadow toggle flags

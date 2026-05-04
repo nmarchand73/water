@@ -17,6 +17,12 @@
  */
 
 import type { PipelineConfig } from './types';
+import { REF_POOL_HALF_EXTENT } from './scene-constants';
+import {
+  waterHeightWorld,
+  type WaveCpuSample,
+  EMPTY_WAVE_CPU_SAMPLE,
+} from './water-cpu';
 
 // Import shader modules
 import fullscreenVertShader from './shaders/water/fullscreen.vert.wgsl';
@@ -118,6 +124,18 @@ export class Water {
   /** Shared simulation tuning (injection, wave response, velocity damping) for all sim passes */
   private simulationParamsBuffer: GPUBuffer;
 
+  /** Pixel format of `textureA` / `textureB` (must match readback decode). */
+  private simTextureFormat: GPUTextureFormat;
+
+  /** Staging buffer for 3×3 sim texel readback (GPU → CPU, async). */
+  private readbackStaging!: GPUBuffer;
+
+  /** Last successfully mapped height sample (lags GPU by ~1 frame). */
+  private waveCpuSample: WaveCpuSample = { ...EMPTY_WAVE_CPU_SAMPLE };
+
+  /** Prevents overlapping copy/map while a prior readback is still mapping. */
+  private readbackInFlight = false;
+
   // --- Simulation Pipelines ---
   // Each pipeline performs one step of the simulation
 
@@ -209,9 +227,19 @@ export class Water {
     this.sceneParamsBuffer = sceneParamsBuffer;
     this.poolHalfExtent = poolHalfExtent;
 
+    this.simTextureFormat = this.device.features.has('float32-filterable')
+      ? 'rgba32float'
+      : 'rgba16float';
+
     // Create double-buffered simulation textures
     this.textureA = this.createTexture();
     this.textureB = this.createTexture();
+
+    this.readbackStaging = this.device.createBuffer({
+      label: 'Water sim height readback 3x3',
+      size: 3 * 256,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
 
     // Caustics texture (higher resolution for detail)
     this.causticsTexture = this.device.createTexture({
@@ -249,11 +277,13 @@ export class Water {
    * The texture stores height, velocity, and normal data in RGBA channels.
    */
   private createTexture(): GPUTexture {
-    const format = this.device.features.has('float32-filterable') ? 'rgba32float' : 'rgba16float';
     return this.device.createTexture({
       size: [this.width, this.height],
-      format: format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+      format: this.simTextureFormat,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.COPY_SRC,
     });
   }
 
@@ -265,9 +295,7 @@ export class Water {
    * then textures are swapped.
    */
   private createPipelines(): void {
-    const format: GPUTextureFormat = this.device.features.has('float32-filterable')
-      ? 'rgba32float'
-      : 'rgba16float';
+    const format: GPUTextureFormat = this.simTextureFormat;
 
     // --- Drop Pipeline ---
     // Adds circular ripples to the water at a given position
@@ -840,6 +868,89 @@ export class Water {
   /** Minimum simulation UV step — use for foam / derivative sampling in shaders. */
   getWaterTexel(): number {
     return Math.min(1 / this.width, 1 / this.height);
+  }
+
+  /**
+   * Latest completed async readback (may be stale by 1–2 frames). Used for CPU wave–body coupling.
+   */
+  getWaveCpuSample(): WaveCpuSample {
+    return this.waveCpuSample;
+  }
+
+  /**
+   * Copies a 3×3 region of sim height (texture R) around the world-XZ position into a staging buffer
+   * and updates `getWaveCpuSample()` when the map completes. Safe to call every frame; skips if a copy
+   * is already in flight.
+   */
+  queueWaveHeightReadback(worldX: number, worldZ: number): void {
+    if (this.readbackInFlight) {
+      return;
+    }
+    this.readbackInFlight = true;
+    const poolHalf = this.poolHalfExtent;
+    const uvx = worldX * (0.5 / poolHalf) + 0.5;
+    const uvy = worldZ * (0.5 / poolHalf) + 0.5;
+    const ix = Math.min(this.width - 2, Math.max(1, Math.floor(uvx * this.width)));
+    const iy = Math.min(this.height - 2, Math.max(1, Math.floor(uvy * this.height)));
+    const originX = ix - 1;
+    const originY = iy - 1;
+
+    const bytesPerRow = 256;
+    const encoder = this.device.createCommandEncoder({ label: 'Water sim height readback' });
+    encoder.copyTextureToBuffer(
+      { texture: this.textureA, origin: { x: originX, y: originY, z: 0 } },
+      { buffer: this.readbackStaging, offset: 0, bytesPerRow },
+      { width: 3, height: 3, depthOrArrayLayers: 1 }
+    );
+    this.device.queue.submit([encoder.finish()]);
+
+    const format = this.simTextureFormat;
+    const staging = this.readbackStaging;
+
+    staging
+      .mapAsync(GPUMapMode.READ, 0, 3 * bytesPerRow)
+      .then(() => {
+        const mapped = staging.getMappedRange();
+        const ab = mapped.slice(0);
+        staging.unmap();
+        this.readbackInFlight = false;
+
+        const pixelBytes = format === 'rgba32float' ? 16 : 8;
+        const readR = (row: number, col: number): number => {
+          const byteOffset = row * bytesPerRow + col * pixelBytes;
+          if (format === 'rgba32float') {
+            return new Float32Array(ab, byteOffset, 1)[0];
+          }
+          return new DataView(ab, byteOffset, 2).getFloat16(0, true);
+        };
+
+        const h10 = readR(1, 0);
+        const h11 = readR(1, 1);
+        const h12 = readR(1, 2);
+        const h01 = readR(0, 1);
+        const h21 = readR(2, 1);
+
+        const worldDx = (2 * poolHalf) / this.width;
+        const worldDz = (2 * poolHalf) / this.height;
+        const dSimDx = (h12 - h10) / (2 * worldDx);
+        const dSimDz = (h21 - h01) / (2 * worldDz);
+        const scale = poolHalf / REF_POOL_HALF_EXTENT;
+        const dhdxWorld = scale * dSimDx;
+        const dhdzWorld = scale * dSimDz;
+        const simH = h11;
+        const surfaceWorldY = waterHeightWorld(simH, poolHalf);
+
+        this.waveCpuSample = {
+          valid: true,
+          simH,
+          surfaceWorldY,
+          dhdxWorld,
+          dhdzWorld,
+        };
+      })
+      .catch(() => {
+        this.readbackInFlight = false;
+      });
   }
 
   /**

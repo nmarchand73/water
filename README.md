@@ -14,6 +14,10 @@ This repository ([nmarchand73/water](https://github.com/nmarchand73/water)) exte
 
 Changes here include interaction and build fixes (pointer → ray mapping, WGSL `#include` via Vite), pool/world height scaling, **gravity on by default**, a collapsible help panel with full scrollable text, and **GitHub Pages** deployment with base path `/water/`.
 
+### Tubes Cursor overlay (licensing)
+
+The optional **neon tubes** pointer effect is **TubesCursor** from [`threejs-components`](https://www.npmjs.com/package/threejs-components) (same family as [this CodePen](https://codepen.io/soju22/pen/qEbdVjK)). It is **not** MIT: the original effect is shared under **CC BY-NC-SA 4.0** (non-commercial). **Do not use this overlay in a commercial shipping product** unless you replace it with your own implementation or secure rights from the rights holder. The MIT license on Evan Wallace’s / this fork’s pool code does not extend to that third-party cursor asset. Toggle and underwater fade live under **Settings → Scene** (`Cursor tubes`, `Tubes underwater min α`).
+
 ---
 
 ## Requirements
@@ -78,6 +82,7 @@ Uses `npm run build:pages` then publishes `dist` to the `gh-pages` branch. In **
 | Move sphere | Drag the sphere |
 | Gravity | **G** (on by default) |
 | Light from camera | **L** (hold) or enable in Settings |
+| Cursor tubes | Settings → Scene → **Cursor tubes** (neon overlay; see licensing note above) |
 
 Use the **menu** button (top-right) to open the help panel.
 

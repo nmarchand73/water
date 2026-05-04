@@ -53,6 +53,23 @@ Released under the MIT license
         left: 0;
         touch-action: none;
       }
+      /* Same logical viewport as the scene (excludes help strip). TubesCursor BC.resize() uses parent offsetWidth/Height — must not be body. */
+      #view-area {
+        position: absolute;
+        top: 0;
+        left: 0;
+        overflow: hidden;
+      }
+      /* WebGPU scene (bottom); TubesCursor overlay — no pointer capture */
+      #scene-canvas {
+        z-index: 1;
+      }
+      /* Screen: black clear from WebGL shows as transparent; neon tubes add on top.
+         Pointer hits go to this canvas first; main.ts clones events to #scene-canvas. */
+      #tubes-cursor {
+        z-index: 3;
+        mix-blend-mode: screen;
+      }
       #help {
         position: absolute;
         top: 0;
@@ -365,7 +382,10 @@ Released under the MIT license
     <img id="ypos" src="ypos.jpg" />
     <img id="zneg" src="zneg.jpg" />
     <img id="zpos" src="zpos.jpg" />
-    <canvas></canvas>
+    <div id="view-area">
+      <canvas id="scene-canvas"></canvas>
+      <canvas id="tubes-cursor"></canvas>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

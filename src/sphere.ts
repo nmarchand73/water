@@ -196,10 +196,26 @@ export class Sphere {
   }
 
   /**
-   * Writes GPU uniforms: center, radius, Y spin (for UFO), shapeKind (0 sphere / 1 UFO).
+   * Writes GPU uniforms: center, radius, Y spin (for UFO), shapeKind, wave pitch/roll (radians).
    */
-  update(center: number[], radius: number, spinY: number, shapeKind: number): void {
-    const data = new Float32Array([center[0], center[1], center[2], radius, spinY, shapeKind, 0, 0]);
+  update(
+    center: number[],
+    radius: number,
+    spinY: number,
+    shapeKind: number,
+    wavePitch = 0,
+    waveRoll = 0
+  ): void {
+    const data = new Float32Array([
+      center[0],
+      center[1],
+      center[2],
+      radius,
+      spinY,
+      shapeKind,
+      wavePitch,
+      waveRoll,
+    ]);
     this.device.queue.writeBuffer(this.sphereUniformBuffer, 0, data);
   }
 

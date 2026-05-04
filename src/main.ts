@@ -51,6 +51,7 @@ import ufoObjUrl from './shapes/UFO_Saucer.obj?url';
 import { fetchAndParseUfoObj } from './shapes/parse-ufo-obj';
 import {
   buoyancyStrength,
+  centerYForSubmergedFractionBelowPlane,
   DEFAULT_AIR_FILLED_SPHERE_DENSITY,
   DEFAULT_AIR_FILLED_UFO_DENSITY,
   INTERIOR_DENSE_SPHERE_DENSITY,
@@ -61,7 +62,17 @@ import {
   RELATIVE_DENSITY_MIN,
   resolvePoolCollisions,
   submergedVolumeFraction,
+  submergedVolumeFractionBelowPlane,
 } from './sphere-physics';
+import {
+  initTubesCursor,
+  resizeTubesCursorHost,
+  syncTubesCanvasSize,
+  syncTubesCursorScenePalette,
+  updateTubesOverlayStyle,
+  wireOverlayPointerPassthrough,
+  type TubesCursorApp,
+} from './tubes-cursor';
 
 /** GUI interior presets (built-in ρ vs water); Custom uses the slider. */
 type InteriorPreset = 'Air-filled' | 'Solid' | 'Dense' | 'Custom';
@@ -92,7 +103,10 @@ async function init(): Promise<void> {
   }
 
   const device = await adapter.requestDevice({ requiredFeatures });
-  const canvas = document.querySelector('canvas')!;
+  const viewArea = document.getElementById('view-area') as HTMLDivElement;
+  const canvas = document.getElementById('scene-canvas') as HTMLCanvasElement;
+  const tubesCanvas = document.getElementById('tubes-cursor') as HTMLCanvasElement;
+  let tubesApp: TubesCursorApp | null = null;
   const context = canvas.getContext('webgpu')!;
   const format = navigator.gpu.getPreferredCanvasFormat();
 
@@ -206,7 +220,7 @@ async function init(): Promise<void> {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // SphereUniforms: center, radius, spinY, shapeKind, pad (32 bytes - see bindings.wgsl)
+  // SphereUniforms: center, radius, spinY, shapeKind, wavePitch, waveRoll (32 bytes - bindings.wgsl)
   const sphereUniformBuffer = device.createBuffer({
     size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -386,8 +400,21 @@ async function init(): Promise<void> {
   /** Whether simulation is paused */
   let paused = false;
 
+  /** Pointer interaction mode — declared early so `writeSphereUniforms` can read it during init. */
+  let mode: InteractionMode = InteractionMode.None;
+
   /** Accumulated Y rotation for UFO mesh (radians). */
   let ufoSpin = 0;
+  /**
+   * Passive Y spin for the plain sphere (radians). A uniform sphere is symmetric, so
+   * `spinY = 0` makes it look "frozen" next to the spinning saucer; a slow spin makes
+   * the triplanar grain and lighting read motion (wave pitch/roll still apply on top).
+   */
+  let sphereSpin = 0;
+
+  /** Smoothed wave-follow tilt (radians), aligned with water surface normal via dhdx/dhdz readback. */
+  let waveTiltPitch = 0;
+  let waveTiltRoll = 0;
 
   // --- GUI ---
   const gui = new GUI({ title: 'Settings' });
@@ -422,13 +449,68 @@ async function init(): Promise<void> {
     surfaceRoughness: 0.12,
     foamStrength: 0.55,
     linerPreset: defaultLiner.label,
+    /** TubesCursor overlay (threejs-components); CC BY-NC-SA — see README. */
+    cursorTubes: false,
+    /** Opacity when the camera is fully underwater (below y = 0). */
+    tubesUnderwaterMinOpacity: 0.18,
+    /** Tube colors + CSS follow sun direction and caustics (pool-integrated look). */
+    tubesMatchScene: true,
+    /** Sample GPU wave height at the floater XZ and couple buoyancy + slope drift (1-frame lag). */
+    waveBodyCoupling: true,
   };
+
+  /**
+   * Vertical spring toward local surface height. Buoyancy tracks fSub; keep moderate — high values
+   * + 1-frame GPU lag drive vertical oscillation (especially air-filled).
+   */
+  const WAVE_RIDE_SPRING = 9.5;
+  /** Horizontal push along wave slope (noise-sensitive — clamp slopes below). */
+  const WAVE_SLOPE_ACCEL = 2.05;
+  /** Ignore spike gradients from 3×3 readback (reduces jitter / “surfing” ripples). */
+  const WAVE_MAX_SURFACE_SLOPE = 0.55;
+
+  /** Cap hull tilt so extreme slopes don’t flip the mesh (~±30°). */
+  const WAVE_MAX_BODY_TILT_RAD = 0.52;
+
+  /** Extra gain so shallow swell still reads on camera (atan slope alone is tiny). */
+  const WAVE_BODY_TILT_GAIN = 2.75;
+
+  /**
+   * Euler tilt toward normalized surface (-dhdx, 1, -dhdz): roll about Z from dhdx, pitch about X from dhdz.
+   * Clamped for stability; smoothing happens in `writeSphereUniforms`.
+   */
+  function targetWaveTiltFromSlopes(dhdx: number, dhdz: number): { roll: number; pitch: number } {
+    const sx = Math.max(
+      -WAVE_MAX_SURFACE_SLOPE,
+      Math.min(WAVE_MAX_SURFACE_SLOPE, dhdx)
+    );
+    const sz = Math.max(
+      -WAVE_MAX_SURFACE_SLOPE,
+      Math.min(WAVE_MAX_SURFACE_SLOPE, dhdz)
+    );
+    let roll = Math.atan2(sx, 1.0) * WAVE_BODY_TILT_GAIN;
+    let pitch = Math.atan2(-sz, 1.0) * WAVE_BODY_TILT_GAIN;
+    const slopeBoost = 1.0 + Math.min(1.8, Math.hypot(sx, sz) * 3.2);
+    roll *= slopeBoost;
+    pitch *= slopeBoost;
+    return {
+      roll: Math.max(-WAVE_MAX_BODY_TILT_RAD, Math.min(WAVE_MAX_BODY_TILT_RAD, roll)),
+      pitch: Math.max(-WAVE_MAX_BODY_TILT_RAD, Math.min(WAVE_MAX_BODY_TILT_RAD, pitch)),
+    };
+  }
 
   const gravityController = objectFolder
     .add(settings, 'gravity')
     .name('Toggle Gravity')
     .onChange((v: boolean) => {
       useSpherePhysics = v;
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  objectFolder
+    .add(settings, 'waveBodyCoupling')
+    .name('Wave ↔ body coupling')
+    .onChange(() => {
       (document.activeElement as HTMLElement)?.blur();
     });
 
@@ -514,15 +596,69 @@ async function init(): Promise<void> {
       : sceneDims.ballRadius;
   }
 
-  /** Writes sphere/UFO GPU uniforms; advances UFO spin when `dtSpin > 0` and object is UFO. */
-  function writeSphereUniforms(dtSpin: number): void {
-    if (settings.object === 'UFO' && dtSpin > 0 && !paused) {
-      ufoSpin += dtSpin * 2.4;
+  /** Writes sphere/UFO GPU uniforms; advances spin when not paused. */
+  function writeSphereUniforms(frameDt: number): void {
+    if (frameDt > 0 && !paused) {
+      if (settings.object === 'UFO') {
+        ufoSpin += frameDt * 2.4;
+      } else if (settings.object === 'Sphere') {
+        // Slower than saucer: hull is round; still enough for grain + highlights to move.
+        sphereSpin += frameDt * 0.72;
+      }
     }
+
+    // Snappier than buoy smoothing — hull tilt must catch visible swell.
+    const tiltAlpha = 1.0 - Math.exp(-18.0 * Math.min(frameDt, 0.12));
+
+    if (
+      !paused &&
+      objectIsSolid() &&
+      settings.waveBodyCoupling &&
+      mode !== InteractionMode.MoveSphere
+    ) {
+      const w = water.getWaveCpuSample();
+      if (w.valid) {
+        const { roll: targetRoll, pitch: targetPitch } = targetWaveTiltFromSlopes(
+          w.dhdxWorld,
+          w.dhdzWorld
+        );
+        const r = effectiveObjectRadius();
+        const fSub = submergedVolumeFractionBelowPlane(
+          center.y,
+          r,
+          w.surfaceWorldY
+        );
+        // Air-filled floaters are mostly above water → fSub alone killed tilt. Weight by
+        // vertical distance to local surface so “riding the swell” still rocks the hull.
+        const dy = Math.abs(center.y - w.surfaceWorldY);
+        const surfaceProximity = Math.exp(-dy / Math.max(1e-6, r * 0.75));
+        const tiltWeight = Math.max(
+          0.38,
+          Math.min(1, 0.18 + 0.82 * Math.max(fSub, surfaceProximity * 0.92))
+        );
+        waveTiltRoll += (targetRoll * tiltWeight - waveTiltRoll) * tiltAlpha;
+        waveTiltPitch += (targetPitch * tiltWeight - waveTiltPitch) * tiltAlpha;
+      } else {
+        waveTiltRoll *= 1.0 - tiltAlpha * 0.55;
+        waveTiltPitch *= 1.0 - tiltAlpha * 0.55;
+      }
+    } else {
+      const relax = 1.0 - tiltAlpha * 0.88;
+      waveTiltRoll *= relax;
+      waveTiltPitch *= relax;
+    }
+
     sphere.setMeshKind(settings.object === 'UFO' ? 'ufo' : 'sphere');
     const shapeKind = settings.object === 'UFO' ? 1 : 0;
-    const spinY = settings.object === 'UFO' ? ufoSpin : 0;
-    sphere.update(center.toArray(), effectiveObjectRadius(), spinY, shapeKind);
+    const spinY = settings.object === 'UFO' ? ufoSpin : sphereSpin;
+    sphere.update(
+      center.toArray(),
+      effectiveObjectRadius(),
+      spinY,
+      shapeKind,
+      waveTiltPitch,
+      waveTiltRoll
+    );
   }
 
   function objectIsSolid(): boolean {
@@ -561,6 +697,27 @@ async function init(): Promise<void> {
   sceneFolder
     .add(settings, 'followCamera')
     .name('Light From Camera')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  sceneFolder
+    .add(settings, 'cursorTubes')
+    .name('Cursor tubes')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  sceneFolder
+    .add(settings, 'tubesUnderwaterMinOpacity', 0, 1, 0.02)
+    .name('Tubes underwater min α')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  sceneFolder
+    .add(settings, 'tubesMatchScene')
+    .name('Tubes match scene')
     .onChange(() => {
       (document.activeElement as HTMLElement)?.blur();
     });
@@ -750,8 +907,6 @@ async function init(): Promise<void> {
 
   // --- Pointer Interaction (supports mouse, touch, and pen) ---
 
-  /** Current interaction mode */
-  let mode: InteractionMode = InteractionMode.None;
   /** Previous pointer X position */
   let oldX = 0;
   /** Previous pointer Y position */
@@ -767,6 +922,74 @@ async function init(): Promise<void> {
   let lastPinchDistance = 0;
   /** Midpoint of two touches — used to orbit when both fingers move together (not only pinch). */
   let lastTwoFingerCentroid: { x: number; y: number } | null = null;
+
+  /** Last pointer position in client coordinates (for Tubes overlay + water hit-test). */
+  let lastPointerClient: { x: number; y: number } | null = null;
+
+  /**
+   * Bitmask from the latest pointer event (`MouseEvent.buttons`). Tubes overlay only shows while
+   * primary is held (`buttons & 1`): left mouse or touch contact.
+   */
+  let lastPointerButtons = 0;
+  /** Last pointer device kind — touch needs a fallback when `buttons` stays 0 on move (see render). */
+  let lastPointerType: string = 'mouse';
+
+  /** Ripple injection when clicking/dragging the pool (stronger = heavier splashes). */
+  const WATER_TOUCH_RADIUS = 0.044;
+  const WATER_TOUCH_STRENGTH = 0.017;
+
+  /**
+   * One-frame multiplier for sphere→water displacement after a waterline cross (enter/exit).
+   * Consumed inside {@link displaceWaterForSphereMotion}.
+   */
+  let splashDisplacementBoost = 1.0;
+
+  /** Avoid rapid fire when oscillating across fSub threshold at the rim. */
+  let lastWaterlineSplashMs = -Infinity;
+
+  /**
+   * Extra ripple + displacement when the ball crosses the air/water boundary (entry splash / exit).
+   */
+  function injectWaterlineSplash(
+    fSubBefore: number,
+    fSubAfter: number,
+    vy: number,
+    ballRadius: number,
+    poolHalf: number,
+    nowMs: number
+  ): void {
+    const threshold = 0.034;
+    const entered = fSubBefore < threshold && fSubAfter >= threshold;
+    const exited = fSubBefore >= threshold && fSubAfter < threshold;
+    if (!entered && !exited) {
+      return;
+    }
+    if (nowMs - lastWaterlineSplashMs < 220) {
+      return;
+    }
+    lastWaterlineSplashMs = nowMs;
+    const nx = center.x / poolHalf;
+    const nz = center.z / poolHalf;
+    if (Math.abs(nx) >= 0.992 || Math.abs(nz) >= 0.992) {
+      return;
+    }
+    const vyAbs = Math.min(24, Math.abs(vy));
+    const speedBoost = 0.52 + Math.min(1.55, vyAbs * 0.088);
+    const dropR = Math.min(
+      0.12,
+      (0.036 + ballRadius * 0.55) * (entered ? 1.1 : 0.96)
+    );
+    const baseStr = 0.026;
+    let strength = Math.min(0.12, (baseStr + vyAbs * 0.019) * speedBoost);
+    if (exited) {
+      strength *= 0.62;
+    }
+    water.addDrop(nx, nz, dropR, strength);
+    splashDisplacementBoost = Math.max(
+      splashDisplacementBoost,
+      entered ? 1.68 : 1.42
+    );
+  }
 
   /**
    * Gets the current viewport as [x, y, width, height].
@@ -795,6 +1018,40 @@ async function init(): Promise<void> {
     const t = (planeY - tracer.eye.y) / ray.y;
     if (!Number.isFinite(t) || t <= 0) return null;
     return tracer.eye.add(ray.multiply(t));
+  }
+
+  /** Distance along ray (same convention as {@link Raytracer.hitTestSphere}) to y = planeY. */
+  function rayDistanceToPlaneY(tracer: Raytracer, ray: Vector, planeY: number): number | null {
+    if (Math.abs(ray.y) < 1e-6) return null;
+    const t = (planeY - tracer.eye.y) / ray.y;
+    if (!Number.isFinite(t) || t <= 0) return null;
+    return t;
+  }
+
+  /**
+   * True if a screen-space pointer lies over the water surface (not blocked by the sphere).
+   * Used to show the Tubes overlay whenever the cursor/touch aims at the pool.
+   */
+  function clientRayHitsWaterSurface(clientX: number, clientY: number): boolean {
+    const { x, y } = pointerToCanvasDevicePixels(clientX, clientY);
+    const { projectionMatrix, viewMatrix } = getMatrices();
+    const tracer = new Raytracer(viewMatrix, projectionMatrix, getViewport());
+    const ray = tracer.getRayForPixel(x, y);
+    const sphereHit = objectIsSolid()
+      ? Raytracer.hitTestSphere(tracer.eye, ray, center, effectiveObjectRadius())
+      : null;
+    const pointOnPlane = intersectPlaneY(tracer, ray, 0);
+    if (!pointOnPlane) return false;
+    if (
+      Math.abs(pointOnPlane.x) >= sceneDims.poolHalfExtent ||
+      Math.abs(pointOnPlane.z) >= sceneDims.poolHalfExtent
+    ) {
+      return false;
+    }
+    const tPlane = rayDistanceToPlaneY(tracer, ray, 0);
+    if (tPlane === null) return false;
+    if (sphereHit && sphereHit.t > 0 && sphereHit.t < tPlane) return false;
+    return true;
   }
 
   /**
@@ -848,8 +1105,8 @@ async function init(): Promise<void> {
         water.addDrop(
           pointOnPlane.x / sceneDims.poolHalfExtent,
           pointOnPlane.z / sceneDims.poolHalfExtent,
-          0.03,
-          0.01
+          WATER_TOUCH_RADIUS,
+          WATER_TOUCH_STRENGTH
         );
       }
     } else {
@@ -920,8 +1177,8 @@ async function init(): Promise<void> {
         water.addDrop(
           pointOnPlane.x / sceneDims.poolHalfExtent,
           pointOnPlane.z / sceneDims.poolHalfExtent,
-          0.03,
-          0.01
+          WATER_TOUCH_RADIUS,
+          WATER_TOUCH_STRENGTH
         );
       }
     }
@@ -957,6 +1214,23 @@ async function init(): Promise<void> {
   }
 
   // Pointer event listeners (unified mouse/touch/pen input)
+  // Capture phase: TubesCursor / overlay may stop bubbling; we still need coords for water hit-test + neon overlay.
+  const syncLastPointerForTubes = (e: PointerEvent) => {
+    lastPointerButtons = e.buttons;
+    lastPointerType = e.pointerType;
+    const t = e.target;
+    if (t instanceof Node && viewArea.contains(t)) {
+      lastPointerClient = { x: e.clientX, y: e.clientY };
+    }
+  };
+  window.addEventListener('pointermove', syncLastPointerForTubes, true);
+  window.addEventListener('pointerdown', syncLastPointerForTubes, true);
+  window.addEventListener('pointerup', syncLastPointerForTubes, true);
+  window.addEventListener('pointercancel', syncLastPointerForTubes, true);
+  viewArea.addEventListener('pointerleave', () => {
+    lastPointerClient = null;
+  });
+
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button === 1) return; // Ignore middle click
     e.preventDefault();
@@ -1095,10 +1369,14 @@ async function init(): Promise<void> {
         : window.innerWidth - help.clientWidth - 20;
     const height = window.innerHeight;
     const dpr = window.devicePixelRatio || 1;
+    viewArea.style.width = `${width}px`;
+    viewArea.style.height = `${height}px`;
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
+    syncTubesCanvasSize(tubesCanvas, canvas);
+    resizeTubesCursorHost(tubesApp);
 
     // Recreate depth texture at new size
     if (depthTexture) depthTexture.destroy();
@@ -1136,6 +1414,11 @@ async function init(): Promise<void> {
   document.getElementById('loading')!.style.display = 'none';
   document.body.classList.remove('loading');
   onResize();
+  // TubesCursor BC.resize() uses parent #view-area size — must run after first onResize.
+  tubesApp = initTubesCursor(tubesCanvas);
+  resizeTubesCursorHost(tubesApp);
+  // Library listens on the overlay canvas; pointer-events must reach it (then clone to scene).
+  wireOverlayPointerPassthrough(tubesCanvas, canvas);
 
   /**
    * Projects sphere motion into the wave heightfield. Fast bounces inject huge per-frame
@@ -1153,9 +1436,11 @@ async function init(): Promise<void> {
           ) / dt
         : 0;
     const injectAtten = Math.min(1 / (1 + speed * 0.42), 0.92);
+    const splashBoost = splashDisplacementBoost;
+    splashDisplacementBoost = 1.0;
     const { waveResponseStep, dampingStep } = computeWaveStepUniforms();
     water.setSimulationParams(
-      waveSim.sphereInject * injectAtten,
+      waveSim.sphereInject * injectAtten * splashBoost,
       waveResponseStep,
       dampingStep
     );
@@ -1169,8 +1454,9 @@ async function init(): Promise<void> {
 
   /**
    * Updates the common uniform buffer with current camera matrices.
+   * @returns Camera eye Y in world space (for TubesCursor underwater fade).
    */
-  function updateUniforms(): void {
+  function updateUniforms(): { eyeY: number } {
     const { projectionMatrix, viewMatrix } = getMatrices();
     const viewProjectionMatrix = mat4.multiply(projectionMatrix, viewMatrix);
 
@@ -1184,6 +1470,7 @@ async function init(): Promise<void> {
     uniformData.set(eyeVec, 16);
 
     device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+    return { eyeY: eyeVec[1] };
   }
 
   /**
@@ -1227,8 +1514,14 @@ async function init(): Promise<void> {
         velocity = new Vector();
       } else if (useSpherePhysics) {
         const r = effectiveObjectRadius();
-        // Fraction of sphere volume below y = 0 (Archimedes buoyancy uses this, not a linear height blend)
-        const fSub = submergedVolumeFraction(center.y, r);
+        const waveCpu = water.getWaveCpuSample();
+        const useWaveCoupling = settings.waveBodyCoupling && waveCpu.valid;
+        const surfacePlaneY = useWaveCoupling ? waveCpu.surfaceWorldY : 0;
+        // Fraction of sphere volume below the local water plane (flat surface at y=0 when coupling off)
+        const fSubBefore = useWaveCoupling
+          ? submergedVolumeFractionBelowPlane(center.y, r, surfacePlaneY)
+          : submergedVolumeFraction(center.y, r);
+        const fSub = fSubBefore;
         const buoy = buoyancyStrength(effectiveObjectDensity(), settings.useDensity);
 
         // Net vertical acceleration: gravity minus buoyancy proportional to submerged volume
@@ -1246,15 +1539,78 @@ async function init(): Promise<void> {
         const inAir = Math.max(0, 1 - fSub);
         velocity = velocity.multiply(1.0 - airResistance * seconds * inAir);
 
-        // Surface interaction damping near y = 0 (splash / bob)
+        // Ride waves + slide along slope (GPU heightfield sample lags ~1 frame)
+        if (useWaveCoupling) {
+          // Blend linear + quadratic submergence: react clearly when partly afloat, without rim twitch.
+          const couplingWeight = Math.max(
+            0,
+            Math.min(1, fSub * 0.55 + fSub * fSub * 0.85)
+          );
+          // Fixed offset (surface − 0.32r) pulls light shells too deep vs Archimedes equilibrium
+          // (ρ≈0.13 ⇒ ~13% submerged). That fights buoyancy → endless bob. Match float depth to ρ.
+          let targetCenterY: number;
+          if (settings.useDensity) {
+            const rhoObj = effectiveObjectDensity();
+            if (rhoObj <= 0.995) {
+              const fEq = Math.min(0.97, Math.max(0.05, rhoObj));
+              targetCenterY = centerYForSubmergedFractionBelowPlane(
+                waveCpu.surfaceWorldY,
+                r,
+                fEq
+              );
+            } else {
+              targetCenterY = waveCpu.surfaceWorldY - r * 0.36;
+            }
+          } else {
+            targetCenterY = waveCpu.surfaceWorldY - r * 0.32;
+          }
+          // Softer spring for very light objects — avoids hunting when waves lag the target by a frame.
+          const rhoForSpring = settings.useDensity ? effectiveObjectDensity() : 0.55;
+          const lightSpringAtten =
+            rhoForSpring < 0.5 ? 0.18 + 0.80 * rhoForSpring : 1.0;
+          velocity.y +=
+            WAVE_RIDE_SPRING *
+            lightSpringAtten *
+            (targetCenterY - center.y) *
+            couplingWeight *
+            seconds;
+          // Vertical velocity damping near the surface — kills lag-induced bob without a PD spring.
+          const rho = settings.useDensity ? effectiveObjectDensity() : 0.55;
+          const lightVyBoost = Math.max(0, 0.5 - rho) * 10;
+          const surfaceBlend = Math.min(1, fSub * 2.4 + 0.08);
+          const vyDamp = (5.2 + lightVyBoost) * surfaceBlend * seconds;
+          velocity.y *= Math.max(0.38, 1 - Math.min(0.78, vyDamp));
+          // Slightly stronger than fSub² so swell drift is felt before full submergence.
+          const slopePush = Math.pow(Math.max(0, Math.min(1, fSub)), 1.35);
+          const sx = Math.max(
+            -WAVE_MAX_SURFACE_SLOPE,
+            Math.min(WAVE_MAX_SURFACE_SLOPE, waveCpu.dhdxWorld)
+          );
+          const sz = Math.max(
+            -WAVE_MAX_SURFACE_SLOPE,
+            Math.min(WAVE_MAX_SURFACE_SLOPE, waveCpu.dhdzWorld)
+          );
+          velocity.x += WAVE_SLOPE_ACCEL * sx * slopePush * seconds;
+          velocity.z += WAVE_SLOPE_ACCEL * sz * slopePush * seconds;
+        }
+
+        // Surface interaction damping near the local water plane (splash / bob). When wave coupling
+        // is on, the plane moves with the wave — full damping vs that plane erodes wave-driven motion;
+        // scale down so bob/splash damp stays without killing swell drift.
         const effectiveDensity = settings.useDensity
           ? effectiveObjectDensity()
           : 1.0;
-        const distanceFromSurface = Math.abs(center.y);
+        const distanceFromSurface = Math.abs(center.y - surfacePlaneY);
         const surfaceProximity = Math.max(0, 1 - distanceFromSurface / r);
         const baseDamping = 0.48;
         const densityDamping = 0.48 * effectiveDensity;
-        const surfaceDamping = 1.0 - surfaceProximity * (baseDamping + densityDamping) * seconds;
+        const surfaceDampScale = useWaveCoupling ? 0.4 : 1.0;
+        const surfaceDamping =
+          1.0 -
+          surfaceProximity *
+            (baseDamping + densityDamping) *
+            seconds *
+            surfaceDampScale;
         velocity = velocity.multiply(Math.max(0, surfaceDamping));
 
         center = center.add(velocity.multiply(seconds));
@@ -1263,6 +1619,18 @@ async function init(): Promise<void> {
           halfExtent: sceneDims.poolHalfExtent,
           depth: sceneDims.poolDepth,
         });
+
+        const fSubAfter = useWaveCoupling
+          ? submergedVolumeFractionBelowPlane(center.y, r, surfacePlaneY)
+          : submergedVolumeFraction(center.y, r);
+        injectWaterlineSplash(
+          fSubBefore,
+          fSubAfter,
+          velocity.y,
+          r,
+          sceneDims.poolHalfExtent,
+          time
+        );
       }
 
       if (objectIsSolid()) {
@@ -1289,11 +1657,66 @@ async function init(): Promise<void> {
     water.updateNormals();
     water.updateCaustics();
 
+    if (
+      settings.waveBodyCoupling &&
+      objectIsSolid() &&
+      mode !== InteractionMode.MoveSphere
+    ) {
+      water.queueWaveHeightReadback(center.x, center.z);
+    }
+
     // UFO spin + sphere uniforms (every frame so drag/pause/GUI stay in sync)
     writeSphereUniforms(seconds);
 
     // Update camera uniforms
-    updateUniforms();
+    const { eyeY } = updateUniforms();
+    const pointerOverWater =
+      lastPointerClient !== null &&
+      clientRayHitsWaterSurface(lastPointerClient.x, lastPointerClient.y);
+    /** Neon tubes only while primary is pressed (left button / touch contact), not on hover. */
+    const tubesPrimaryHeld =
+      (lastPointerButtons & 1) !== 0 ||
+      (lastPointerType === 'touch' &&
+        (mode === InteractionMode.AddDrops ||
+          mode === InteractionMode.MoveSphere ||
+          mode === InteractionMode.OrbitCamera));
+    const waterContact =
+      tubesPrimaryHeld && (mode === InteractionMode.AddDrops || pointerOverWater);
+    const pointerPresenceScale =
+      mode === InteractionMode.AddDrops ? 1 : pointerOverWater ? 0.68 : 1;
+
+    let grazingFactor = 0;
+    if (pointerOverWater && lastPointerClient && tubesPrimaryHeld) {
+      const p = pointerToCanvasDevicePixels(lastPointerClient.x, lastPointerClient.y);
+      const { projectionMatrix, viewMatrix } = getMatrices();
+      const tracer = new Raytracer(viewMatrix, projectionMatrix, getViewport());
+      const rd = tracer.getRayForPixel(p.x, p.y);
+      grazingFactor = Math.min(1, Math.hypot(rd.x, rd.z));
+    }
+
+    const lightHueRotateDeg =
+      settings.tubesMatchScene && settings.cursorTubes
+        ? (Math.atan2(lightDir.x, lightDir.z) * 180) / Math.PI
+        : 0;
+    const overlayHueRotateDeg = lightHueRotateDeg * 0.07;
+
+    syncTubesCursorScenePalette({
+      app: tubesApp,
+      enabled: settings.cursorTubes,
+      sceneIntegration: settings.tubesMatchScene,
+      lightDir: { x: lightDir.x, y: lightDir.y, z: lightDir.z },
+      causticsIntensity: settings.causticsIntensity,
+    });
+
+    updateTubesOverlayStyle(tubesCanvas, {
+      enabled: settings.cursorTubes,
+      waterContact,
+      eyeY,
+      underwaterMinOpacity: settings.tubesUnderwaterMinOpacity,
+      grazingFactor,
+      lightHueRotateDeg: overlayHueRotateDeg,
+      pointerPresenceScale,
+    });
 
     // --- GPU Render Pass ---
 

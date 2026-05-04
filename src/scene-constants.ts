@@ -1,6 +1,12 @@
 /** World-space half width/depth of the pool on X and Z (default). */
 export const DEFAULT_POOL_HALF_EXTENT = 2.0;
 
+/**
+ * Must match `REF_POOL_HALF_EXTENT` in `shaders/common/functions.wgsl` — scales simulated height (R
+ * channel) to world meters via `simHeight * (poolHalfExtent / REF_POOL_HALF_EXTENT)`.
+ */
+export const REF_POOL_HALF_EXTENT = 2.0;
+
 /** Depth from water surface (y=0) to floor (default), in world units. */
 export const DEFAULT_POOL_DEPTH = 1.0;
 
