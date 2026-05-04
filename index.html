@@ -59,7 +59,21 @@ Released under the MIT license
         bottom: 0;
         width: 280px;
         padding-right: 20px;
-        overflow: auto;
+        padding-left: 12px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: 5;
+        background: rgba(0, 0, 0, 0.88);
+        transition: transform 0.3s ease-in-out;
+      }
+      #help > h1 {
+        flex-shrink: 0;
+      }
+      #help.collapsed {
+        transform: translateX(100%);
+        pointer-events: none;
       }
       #loading {
         position: absolute;
@@ -88,11 +102,13 @@ Released under the MIT license
         visibility: hidden;
       }
       #help-toggle {
-        display: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         position: absolute;
         top: 10px;
         right: 10px;
-        z-index: 10;
+        z-index: 11;
         cursor: pointer;
         user-select: none;
         color: white;
@@ -104,6 +120,11 @@ Released under the MIT license
         height: 24px;
         line-height: 24px;
         text-align: center;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+      }
+      /* Bouton sur le bord du panneau quand la barre est ouverte */
+      #help:not(.collapsed) + #help-toggle {
+        right: 292px;
       }
       .lil-gui.lil-auto-place,
       .lil-gui.autoPlace {
@@ -135,32 +156,37 @@ Released under the MIT license
       @media (max-width: 600px) {
         #help {
           width: 200px;
-          background: #222;
           padding-left: 10px;
           padding-top: 40px;
-          z-index: 5;
-          transition: transform 0.3s ease-in-out;
-          transform: translateX(0);
-        }
-        #help.collapsed {
-          transform: translateX(100%);
-          display: block;
-        }
-        #help.collapsed + #help-toggle {
-          right: 10px;
         }
         #help:not(.collapsed) + #help-toggle {
-          right: 196px;
+          right: 212px;
         }
-        #help-toggle {
-          display: block;
-        }
+      }
+      .help-body-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        font-size: 11px;
+        line-height: 1.35;
+        padding-right: 6px;
+        padding-bottom: 16px;
+        margin-right: -4px;
+        -webkit-overflow-scrolling: touch;
+      }
+      .help-body-scroll h2 {
+        font-size: 14px;
+      }
+      .help-body-scroll ul {
+        margin: 4px 0;
       }
     </style>
   </head>
   <body class="loading">
     <div id="help" class="collapsed">
       <h1>WebGPU Water</h1>
+      <div class="help-body-scroll">
       <p>
         Made by
         <a href="http://madebyevan.com/" target="_blank" rel="noopener noreferrer">Evan Wallace</a>
@@ -204,7 +230,7 @@ Released under the MIT license
         <li>Press SPACEBAR to pause and unpause</li>
         <li>Drag the sphere to move it around</li>
         <li>Press the L key to set the light direction</li>
-        <li>Press the G key to toggle gravity</li>
+        <li>Press the G key to toggle gravity (on by default)</li>
       </ul>
       <h2>Features:</h2>
       <ul>
@@ -236,8 +262,9 @@ Released under the MIT license
         >
         <small>Last updated: February 10 2026</small>
       </p>
+      </div>
     </div>
-    <div id="help-toggle" class="material-icons font-loading">menu</div>
+    <div id="help-toggle" class="material-icons font-loading" title="Show / hide help">menu</div>
     <script>
       document.fonts.load('24px Material Icons').then(function() {
         document.getElementById('help-toggle').classList.remove('font-loading');

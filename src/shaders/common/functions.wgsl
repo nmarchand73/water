@@ -1,5 +1,26 @@
 // Common utility functions used across multiple shaders
 
+// Tile albedo on the pool floor: repeat pattern so each tile is half the linear size (2×2 tiles per former UV patch)
+const FLOOR_TILE_UV_REPEAT : f32 = 2.0;
+
+// Map world XZ in [-halfExtent, halfExtent] to simulation texture UV [0, 1]
+fn poolXZToUv(xz : vec2f, halfExtent : f32) -> vec2f {
+  let inv = 0.5 / halfExtent;
+  return xz * inv + vec2f(0.5);
+}
+
+fn poolXZToFloorTileUv(xz : vec2f, halfExtent : f32) -> vec2f {
+  return poolXZToUv(xz, halfExtent) * FLOOR_TILE_UV_REPEAT;
+}
+
+// Sim texture stores height in units tuned at this reference half-extent (see DEFAULT_POOL_HALF_EXTENT).
+// Without scaling, larger pools look "waveless" because the same sim amplitude spans more XZ meters.
+const REF_POOL_HALF_EXTENT : f32 = 2.0;
+
+fn waterHeightWorld(simHeight : f32, poolHalfExtent : f32) -> f32 {
+  return simHeight * (poolHalfExtent / REF_POOL_HALF_EXTENT);
+}
+
 // Ray-box intersection for pool walls
 fn intersectCube(origin: vec3f, ray: vec3f, cubeMin: vec3f, cubeMax: vec3f) -> vec2f {
   let tMin = (cubeMin - origin) / ray;

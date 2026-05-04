@@ -1,0 +1,14 @@
+/** World-space half width/depth of the pool on X and Z (default). */
+export const DEFAULT_POOL_HALF_EXTENT = 2.0;
+
+/** Depth from water surface (y=0) to floor (default), in world units. */
+export const DEFAULT_POOL_DEPTH = 1.0;
+
+/** Ray/AABB upper Y for rim-style effects (default matches original demo). */
+export const DEFAULT_POOL_RIM_MAX_Y = 2.0;
+
+/** Default interactive sphere radius. */
+export const DEFAULT_BALL_RADIUS = 0.25;
+
+/** @deprecated use DEFAULT_POOL_HALF_EXTENT */
+export const POOL_HALF_EXTENT = DEFAULT_POOL_HALF_EXTENT;

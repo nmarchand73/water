@@ -32,6 +32,12 @@ import { Vector, Raytracer } from './lightgl';
 import { Cubemap } from './cubemap';
 import { InteractionMode } from './types';
 import type { MatricesPair, Viewport } from './types';
+import {
+  DEFAULT_BALL_RADIUS,
+  DEFAULT_POOL_DEPTH,
+  DEFAULT_POOL_HALF_EXTENT,
+  DEFAULT_POOL_RIM_MAX_Y,
+} from './scene-constants';
 
 /**
  * Main initialization function.
@@ -68,7 +74,6 @@ async function init(): Promise<void> {
   // --- State Variables ---
 
   const help = document.getElementById('help')!;
-  const ratio = window.devicePixelRatio || 1; // For high-DPI displays
   let prevTime = performance.now();
 
   // --- Texture Loading ---
@@ -192,6 +197,34 @@ async function init(): Promise<void> {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  // Pool / scene scale for GPU (`SceneParams`: halfExtent, depth, rimMaxY, pad)
+  const sceneParamsBuffer = device.createBuffer({
+    label: 'SceneParams',
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  const sceneDims = {
+    poolHalfExtent: DEFAULT_POOL_HALF_EXTENT,
+    poolDepth: DEFAULT_POOL_DEPTH,
+    poolRimMaxY: DEFAULT_POOL_RIM_MAX_Y,
+    ballRadius: DEFAULT_BALL_RADIUS,
+  };
+
+  function syncSceneParams(): void {
+    device.queue.writeBuffer(
+      sceneParamsBuffer,
+      0,
+      new Float32Array([
+        sceneDims.poolHalfExtent,
+        sceneDims.poolDepth,
+        sceneDims.poolRimMaxY,
+        0,
+      ])
+    );
+  }
+  syncSceneParams();
+
   // --- Lighting ---
 
   /** Current light direction (normalized) */
@@ -219,11 +252,20 @@ async function init(): Promise<void> {
     tileSampler,
     lightUniformBuffer,
     sphereUniformBuffer,
-    shadowUniformBuffer
+    shadowUniformBuffer,
+    sceneParamsBuffer,
+    sceneDims.poolHalfExtent
   );
 
   // Create interactive sphere
-  const sphere = new Sphere(device, format, uniformBuffer, lightUniformBuffer, sphereUniformBuffer);
+  const sphere = new Sphere(
+    device,
+    format,
+    uniformBuffer,
+    lightUniformBuffer,
+    sphereUniformBuffer,
+    sceneParamsBuffer
+  );
 
   // Create water simulation (256x256 resolution)
   const water = new Water(
@@ -238,8 +280,30 @@ async function init(): Promise<void> {
     tileTexture,
     tileSampler,
     skyTexture,
-    skySampler
+    skySampler,
+    sceneParamsBuffer,
+    sceneDims.poolHalfExtent
   );
+
+  /** Wave simulation tuning (Settings → Wave simulation). */
+  const waveSim = {
+    sphereInject: 0.1,
+    waveResponse: 1.0,
+    damping: 0.997,
+  };
+
+  const waveSimGui: {
+    inject?: { updateDisplay: () => void };
+    wave?: { updateDisplay: () => void };
+    damp?: { updateDisplay: () => void };
+  } = {};
+
+  function applyWaveSimulationParams(): void {
+    water.setSimulationParams(waveSim.sphereInject, waveSim.waveResponse, waveSim.damping);
+    waveSimGui.inject?.updateDisplay();
+    waveSimGui.wave?.updateDisplay();
+    waveSimGui.damp?.updateDisplay();
+  }
 
   // --- Sphere Physics State ---
 
@@ -247,12 +311,10 @@ async function init(): Promise<void> {
   let center = new Vector(-0.4, -0.75, 0.2);
   /** Previous frame sphere position (for water displacement) */
   let oldCenter = center.clone();
-  /** Sphere radius */
-  const radius = 0.25;
   /** Current sphere velocity */
   let velocity = new Vector();
   /** Whether physics (gravity/buoyancy) is enabled */
-  let useSpherePhysics = false;
+  let useSpherePhysics = true;
   /** Whether simulation is paused */
   let paused = false;
 
@@ -263,6 +325,7 @@ async function init(): Promise<void> {
   const waterFolder = gui.addFolder('Water');
   const objectFolder = gui.addFolder('Object');
   const sceneFolder = gui.addFolder('Scene');
+  const waveSimFolder = gui.addFolder('Wave simulation');
 
   const settings = {
     gravity: useSpherePhysics,
@@ -328,6 +391,65 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
 
+  sceneFolder
+    .add(sceneDims, 'poolHalfExtent', 0.5, 8.0, 0.1)
+    .name('Pool half width (X/Z)')
+    .onChange(() => {
+      syncSceneParams();
+      pool.rebuildGeometry(sceneDims.poolHalfExtent);
+      water.rebuildSurfaceMesh(sceneDims.poolHalfExtent);
+      center.x = Math.max(
+        sceneDims.ballRadius - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.x)
+      );
+      center.z = Math.max(
+        sceneDims.ballRadius - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.z)
+      );
+      sphere.update(center.toArray(), sceneDims.ballRadius);
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  sceneFolder
+    .add(sceneDims, 'poolDepth', 0.2, 5.0, 0.05)
+    .name('Pool depth')
+    .onChange(() => {
+      syncSceneParams();
+      if (center.y < sceneDims.ballRadius - sceneDims.poolDepth) {
+        center.y = sceneDims.ballRadius - sceneDims.poolDepth;
+        sphere.update(center.toArray(), sceneDims.ballRadius);
+      }
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  sceneFolder
+    .add(sceneDims, 'poolRimMaxY', 0.5, 10.0, 0.1)
+    .name('Rim max Y')
+    .onChange(() => {
+      syncSceneParams();
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  sceneFolder
+    .add(sceneDims, 'ballRadius', 0.05, 1.0, 0.01)
+    .name('Ball radius')
+    .onChange(() => {
+      center.x = Math.max(
+        sceneDims.ballRadius - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.x)
+      );
+      center.y = Math.max(
+        sceneDims.ballRadius - sceneDims.poolDepth,
+        Math.min(10, center.y)
+      );
+      center.z = Math.max(
+        sceneDims.ballRadius - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.z)
+      );
+      sphere.update(center.toArray(), sceneDims.ballRadius);
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
   waterFolder
     .add(settings, 'causticsIntensity', 0.0, 1.0, 0.01)
     .name('Caustics')
@@ -349,8 +471,32 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
 
+  waveSimGui.inject = waveSimFolder
+    .add(waveSim, 'sphereInject', 0.02, 0.28, 0.005)
+    .name('Sphere injection')
+    .onChange(() => {
+      applyWaveSimulationParams();
+      (document.activeElement as HTMLElement)?.blur();
+    });
+  waveSimGui.wave = waveSimFolder
+    .add(waveSim, 'waveResponse', 0.4, 4.0, 0.05)
+    .name('Wave response')
+    .onChange(() => {
+      applyWaveSimulationParams();
+      (document.activeElement as HTMLElement)?.blur();
+    });
+  waveSimGui.damp = waveSimFolder
+    .add(waveSim, 'damping', 0.985, 0.9995, 0.0005)
+    .name('Velocity damping')
+    .onChange(() => {
+      applyWaveSimulationParams();
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  applyWaveSimulationParams();
+
   // Initialize sphere position
-  sphere.update(center.toArray(), radius);
+  sphere.update(center.toArray(), sceneDims.ballRadius);
 
   // Add initial random ripples
   for (let i = 0; i < 20; i++) {
@@ -402,9 +548,31 @@ async function init(): Promise<void> {
   }
 
   /**
+   * Maps pointer position to canvas backing-store pixels (same space as {@link getViewport}).
+   * Using bounding rect avoids mismatch between CSS pixels, devicePixelRatio, and floor() resize math.
+   */
+  function pointerToCanvasDevicePixels(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    const sx = canvas.width / rect.width;
+    const sy = canvas.height / rect.height;
+    return {
+      x: (clientX - rect.left) * sx,
+      y: (clientY - rect.top) * sy,
+    };
+  }
+
+  /** Ray vs horizontal plane y = planeY; returns null if parallel or hit behind the camera. */
+  function intersectPlaneY(tracer: Raytracer, ray: Vector, planeY: number): Vector | null {
+    if (Math.abs(ray.y) < 1e-6) return null;
+    const t = (planeY - tracer.eye.y) / ray.y;
+    if (!Number.isFinite(t) || t <= 0) return null;
+    return tracer.eye.add(ray.multiply(t));
+  }
+
+  /**
    * Handles pointer down - determines interaction mode.
-   * @param x - Pointer X position in canvas coordinates
-   * @param y - Pointer Y position in canvas coordinates
+   * @param x - Pointer X in canvas device pixels (0 … canvas.width)
+   * @param y - Pointer Y in canvas device pixels (0 … canvas.height)
    * @param button - Pointer button (0=left, 2=right)
    */
   function startDrag(x: number, y: number, button: number): void {
@@ -419,11 +587,11 @@ async function init(): Promise<void> {
 
     const { projectionMatrix, viewMatrix } = getMatrices();
     const tracer = new Raytracer(viewMatrix, projectionMatrix, getViewport());
-    const ray = tracer.getRayForPixel(x * ratio, y * ratio);
+    const ray = tracer.getRayForPixel(x, y);
 
     // Check if clicking on sphere (only if visible)
     const sphereHit = settings.object === 'Sphere'
-      ? Raytracer.hitTestSphere(tracer.eye, ray, center, radius)
+      ? Raytracer.hitTestSphere(tracer.eye, ray, center, sceneDims.ballRadius)
       : null;
     if (sphereHit) {
       mode = InteractionMode.MoveSphere;
@@ -434,13 +602,20 @@ async function init(): Promise<void> {
     }
 
     // Check if clicking on water surface (y=0 plane)
-    const tPlane = -tracer.eye.y / ray.y;
-    const pointOnPlane = tracer.eye.add(ray.multiply(tPlane));
-
-    if (Math.abs(pointOnPlane.x) < 1 && Math.abs(pointOnPlane.z) < 1) {
-      // Click is within water bounds
+    const pointOnPlane = intersectPlaneY(tracer, ray, 0);
+    if (
+      pointOnPlane &&
+      Math.abs(pointOnPlane.x) < sceneDims.poolHalfExtent &&
+      Math.abs(pointOnPlane.z) < sceneDims.poolHalfExtent
+    ) {
+      // Click is within water bounds (addDrop uses normalized [-1, 1] UV space)
       mode = InteractionMode.AddDrops;
-      water.addDrop(pointOnPlane.x, pointOnPlane.z, 0.03, 0.01);
+      water.addDrop(
+        pointOnPlane.x / sceneDims.poolHalfExtent,
+        pointOnPlane.z / sceneDims.poolHalfExtent,
+        0.03,
+        0.01
+      );
     } else {
       // Click is outside water - orbit camera
       mode = InteractionMode.OrbitCamera;
@@ -449,8 +624,8 @@ async function init(): Promise<void> {
 
   /**
    * Handles pointer move during drag.
-   * @param x - Current pointer X position
-   * @param y - Current pointer Y position
+   * @param x - Current pointer X in canvas device pixels
+   * @param y - Current pointer Y in canvas device pixels
    */
   function duringDrag(x: number, y: number): void {
     if (mode === InteractionMode.OrbitCamera) {
@@ -462,7 +637,7 @@ async function init(): Promise<void> {
       // Move sphere along drag plane
       const { projectionMatrix, viewMatrix } = getMatrices();
       const tracer = new Raytracer(viewMatrix, projectionMatrix, getViewport());
-      const ray = tracer.getRayForPixel(x * ratio, y * ratio);
+      const ray = tracer.getRayForPixel(x, y);
 
       // Intersect ray with drag plane
       const t = -planeNormal.dot(tracer.eye.subtract(prevHit)) / planeNormal.dot(ray);
@@ -470,22 +645,39 @@ async function init(): Promise<void> {
 
       // Update sphere position with bounds checking
       center = center.add(nextHit.subtract(prevHit));
-      center.x = Math.max(radius - 1, Math.min(1 - radius, center.x));
-      center.y = Math.max(radius - 1, Math.min(10, center.y));
-      center.z = Math.max(radius - 1, Math.min(1 - radius, center.z));
+      center.x = Math.max(
+        sceneDims.ballRadius - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.x)
+      );
+      center.y = Math.max(
+        sceneDims.ballRadius - sceneDims.poolDepth,
+        Math.min(10, center.y)
+      );
+      center.z = Math.max(
+        sceneDims.ballRadius - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.z)
+      );
 
-      sphere.update(center.toArray(), radius);
+      sphere.update(center.toArray(), sceneDims.ballRadius);
       prevHit = nextHit;
     } else if (mode === InteractionMode.AddDrops) {
       // Add ripples while dragging on water
       const { projectionMatrix, viewMatrix } = getMatrices();
       const tracer = new Raytracer(viewMatrix, projectionMatrix, getViewport());
-      const ray = tracer.getRayForPixel(x * ratio, y * ratio);
-      const tPlane = -tracer.eye.y / ray.y;
-      const pointOnPlane = tracer.eye.add(ray.multiply(tPlane));
+      const ray = tracer.getRayForPixel(x, y);
+      const pointOnPlane = intersectPlaneY(tracer, ray, 0);
 
-      if (Math.abs(pointOnPlane.x) < 1 && Math.abs(pointOnPlane.z) < 1) {
-        water.addDrop(pointOnPlane.x, pointOnPlane.z, 0.03, 0.01);
+      if (
+        pointOnPlane &&
+        Math.abs(pointOnPlane.x) < sceneDims.poolHalfExtent &&
+        Math.abs(pointOnPlane.z) < sceneDims.poolHalfExtent
+      ) {
+        water.addDrop(
+          pointOnPlane.x / sceneDims.poolHalfExtent,
+          pointOnPlane.z / sceneDims.poolHalfExtent,
+          0.03,
+          0.01
+        );
       }
     }
     oldX = x;
@@ -516,8 +708,9 @@ async function init(): Promise<void> {
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
 
-    // Track this pointer
-    activePointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+    // Track this pointer (device pixels — consistent with Raytracer viewport)
+    const p = pointerToCanvasDevicePixels(e.clientX, e.clientY);
+    activePointers.set(e.pointerId, p);
 
     // If this is the second finger, switch to pinch mode and record initial distance
     if (activePointers.size === 2) {
@@ -528,16 +721,17 @@ async function init(): Promise<void> {
 
     // Only start drag interaction if this is the first/only pointer
     if (activePointers.size === 1) {
-      startDrag(e.offsetX, e.offsetY, e.button);
+      startDrag(p.x, p.y, e.button);
     }
   });
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   canvas.addEventListener('pointermove', (e) => {
+    const p = pointerToCanvasDevicePixels(e.clientX, e.clientY);
     // Update pointer position in our tracking map
     if (activePointers.has(e.pointerId)) {
-      activePointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+      activePointers.set(e.pointerId, p);
     }
 
     // Handle pinch-to-zoom with two fingers
@@ -554,7 +748,7 @@ async function init(): Promise<void> {
 
     // Single pointer drag
     if (mode !== InteractionMode.None && activePointers.size === 1) {
-      duringDrag(e.offsetX, e.offsetY);
+      duringDrag(p.x, p.y);
     }
   });
 
@@ -607,10 +801,17 @@ async function init(): Promise<void> {
    */
   function onResize(): void {
     const isMobile = window.matchMedia('(max-width: 600px)').matches;
-    const width = isMobile ? window.innerWidth : window.innerWidth - help.clientWidth - 20;
+    const helpCollapsed = help.classList.contains('collapsed');
+    // Panneau latéral en overlay sur mobile ; sur desktop il réserve la largeur seulement quand il est ouvert
+    const width = isMobile
+      ? window.innerWidth
+      : helpCollapsed
+        ? window.innerWidth
+        : window.innerWidth - help.clientWidth - 20;
     const height = window.innerHeight;
-    canvas.width = Math.floor(width * ratio);
-    canvas.height = Math.floor(height * ratio);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
 
@@ -708,7 +909,13 @@ async function init(): Promise<void> {
         velocity = new Vector();
       } else if (useSpherePhysics) {
         // Apply gravity and buoyancy
-        const percentUnderWater = Math.max(0, Math.min(1, (radius - center.y) / (2 * radius)));
+        const percentUnderWater = Math.max(
+          0,
+          Math.min(
+            1,
+            (sceneDims.ballRadius - center.y) / (2 * sceneDims.ballRadius)
+          )
+        );
 
         // Buoyancy factor: 1/density when density enabled, otherwise default 1.1
         const buoyancyFactor = settings.useDensity ? 1.0 / settings.density : 1.1;
@@ -733,7 +940,10 @@ async function init(): Promise<void> {
         // Normalized to be frame-rate independent
         const effectiveDensity = settings.useDensity ? settings.density : 1.0;
         const distanceFromSurface = Math.abs(center.y);
-        const surfaceProximity = Math.max(0, 1 - distanceFromSurface / radius);
+        const surfaceProximity = Math.max(
+          0,
+          1 - distanceFromSurface / sceneDims.ballRadius
+        );
         const baseDamping = 0.5; // Damping rate per second
         const densityDamping = 0.5 * effectiveDensity;
         const surfaceDamping = 1.0 - surfaceProximity * (baseDamping + densityDamping) * seconds;
@@ -742,26 +952,33 @@ async function init(): Promise<void> {
         center = center.add(velocity.multiply(seconds));
 
         // Floor collision
-        if (center.y < radius - 1) {
-          center.y = radius - 1;
+        if (center.y < sceneDims.ballRadius - sceneDims.poolDepth) {
+          center.y = sceneDims.ballRadius - sceneDims.poolDepth;
           velocity.y = Math.abs(velocity.y) * 0.7; // Bounce with energy loss
         }
 
-        sphere.update(center.toArray(), radius);
+        sphere.update(center.toArray(), sceneDims.ballRadius);
       }
 
       if (settings.object === 'Sphere') {
         // Update water displacement from sphere movement
-        water.moveSphere(oldCenter.toArray(), center.toArray(), radius);
+        water.moveSphere(oldCenter.toArray(), center.toArray(), sceneDims.ballRadius);
       }
       oldCenter = center.clone();
 
       // Run water simulation (twice per frame for smoother waves)
       water.stepSimulation();
       water.stepSimulation();
-      water.updateNormals();
-      water.updateCaustics();
+    } else if (mode === InteractionMode.MoveSphere && settings.object === 'Sphere') {
+      // Simulation paused but user is dragging the sphere — still apply displacement so ripples show
+      water.moveSphere(oldCenter.toArray(), center.toArray(), sceneDims.ballRadius);
+      oldCenter = center.clone();
     }
+
+    // Always derive normals + caustics from the current height texture — even when paused.
+    // Otherwise addDrop/clicks while paused update height but lighting stays stale until resume.
+    water.updateNormals();
+    water.updateCaustics();
 
     // Update camera uniforms
     updateUniforms();

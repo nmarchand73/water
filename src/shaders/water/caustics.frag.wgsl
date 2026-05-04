@@ -6,6 +6,7 @@
 @binding(1) @group(0) var<uniform> sphere : SphereUniforms;
 @binding(4) @group(0) var<uniform> shadows : ShadowUniforms;
 @binding(5) @group(0) var<uniform> water : WaterUniforms;
+@binding(6) @group(0) var<uniform> scene : SceneParams;
 @binding(2) @group(0) var waterSampler : sampler;
 @binding(3) @group(0) var waterTexture : texture_2d<f32>;
 
@@ -36,8 +37,9 @@ fn fs_main(@location(0) oldPos : vec3f, @location(1) newPos : vec3f, @location(2
     shadow = mix(1.0, shadow, shadows.sphere);
 
     // Rim shadow at pool edges
-    let poolHeight = 1.0;
-    let t = intersectCube(newPos, -refractedLight, vec3f(-1.0, -poolHeight, -1.0), vec3f(1.0, 2.0, 1.0));
+    let poolHeight = scene.poolDepth;
+    let h = scene.poolHalfExtent;
+    let t = intersectCube(newPos, -refractedLight, vec3f(-h, -poolHeight, -h), vec3f(h, scene.poolRimMaxY, h));
     let rimShadow = 1.0 / (1.0 + exp(-200.0 / (1.0 + 10.0 * (t.y - t.x)) * (newPos.y - refractedLight.y * t.y - 2.0 / 12.0)));
     intensity *= mix(1.0, rimShadow, shadows.rim);
 

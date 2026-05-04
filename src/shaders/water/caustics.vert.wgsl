@@ -5,6 +5,7 @@
 @binding(0) @group(0) var<uniform> light : LightUniforms;
 @binding(1) @group(0) var<uniform> sphere : SphereUniforms;
 @binding(4) @group(0) var<uniform> shadows : ShadowUniforms;
+@binding(6) @group(0) var<uniform> scene : SceneParams;
 
 // Water simulation texture
 @binding(2) @group(0) var waterSampler : sampler;
@@ -19,22 +20,23 @@ struct VertexOutput {
 
 // Projects ray from water surface to pool floor
 fn project(origin: vec3f, ray: vec3f, refractedLight: vec3f) -> vec3f {
-    let poolHeight = 1.0;
+    let poolHeight = scene.poolDepth;
+    let h = scene.poolHalfExtent;
     var point = origin;
 
     // First find where ray exits pool volume
-    let tcube = intersectCube(origin, ray, vec3f(-1.0, -poolHeight, -1.0), vec3f(1.0, 2.0, 1.0));
+    let tcube = intersectCube(origin, ray, vec3f(-h, -poolHeight, -h), vec3f(h, scene.poolRimMaxY, h));
     point += ray * tcube.y;
 
-    // Then project down to floor plane (y = -1)
-    let tplane = (-point.y - 1.0) / refractedLight.y;
+    // Then project down to floor plane (y = -poolDepth)
+    let tplane = (-point.y - poolHeight) / refractedLight.y;
     return point + refractedLight * tplane;
 }
 
 @vertex
 fn vs_main(@location(0) position : vec3f) -> VertexOutput {
   var output : VertexOutput;
-  let uv = position.xy * 0.5 + 0.5;
+  let uv = poolXZToUv(position.xy, scene.poolHalfExtent);
 
   // Sample water height and normal
   let info = textureSampleLevel(waterTexture, waterSampler, uv, 0.0);
@@ -58,11 +60,12 @@ fn vs_main(@location(0) position : vec3f) -> VertexOutput {
 
   // Project both rays to pool floor
   output.oldPos = project(pos, refractedLight, refractedLight);
-  output.newPos = project(pos + vec3f(0.0, info.r, 0.0), ray, refractedLight);
+  output.newPos = project(pos + vec3f(0.0, waterHeightWorld(info.r, scene.poolHalfExtent), 0.0), ray, refractedLight);
   output.ray = ray;
 
-  // Position in caustics texture space
-  let projectedPos = 0.75 * (output.newPos.xz - output.newPos.y * refractedLight.xz / refractedLight.y);
+  // Position in caustics texture space (scale so wider pools match original NDC coverage)
+  let floorUvScale = 1.0 / scene.poolHalfExtent;
+  let projectedPos = 0.75 * (output.newPos.xz - output.newPos.y * refractedLight.xz / refractedLight.y) * floorUvScale;
   output.position = vec4f(projectedPos.x, -projectedPos.y, 0.0, 1.0);
 
   return output;

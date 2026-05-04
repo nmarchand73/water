@@ -37,3 +37,11 @@ struct Uniforms {
   modelViewProjectionMatrix : mat4x4f,
   eyePosition : vec3f,
 }
+
+// Shared scene scale (must match sceneParamsBuffer in main.ts)
+struct SceneParams {
+  poolHalfExtent : f32, // horizontal half-size on X and Z (world units)
+  poolDepth : f32,      // depth from water plane y=0 to floor (positive)
+  poolRimMaxY : f32,    // ray/AABB upper Y for rim shadow (typically >= wall tops)
+  _pad : f32,
+}

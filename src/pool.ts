@@ -63,6 +63,12 @@ export class Pool {
   /** The render pipeline for pool rendering */
   private pipeline!: GPURenderPipeline;
 
+  /** Shared pool dimensions for GPU shaders */
+  private sceneParamsBuffer: GPUBuffer;
+
+  /** Current horizontal half-extent (XZ) in world units */
+  private poolHalfExtent: number;
+
   /**
    * Creates a new Pool renderer.
    *
@@ -74,6 +80,8 @@ export class Pool {
    * @param lightUniformBuffer - Buffer with light direction
    * @param sphereUniformBuffer - Buffer with sphere position and radius
    * @param shadowUniformBuffer - Buffer with shadow toggle flags
+   * @param sceneParamsBuffer - Pool depth / half-extent uniforms
+   * @param poolHalfExtent - Initial half-size on X and Z
    */
   constructor(
     device: GPUDevice,
@@ -83,7 +91,9 @@ export class Pool {
     tileSampler: GPUSampler,
     lightUniformBuffer: GPUBuffer,
     sphereUniformBuffer: GPUBuffer,
-    shadowUniformBuffer: GPUBuffer
+    shadowUniformBuffer: GPUBuffer,
+    sceneParamsBuffer: GPUBuffer,
+    poolHalfExtent: number
   ) {
     this.device = device;
     this.format = format;
@@ -95,9 +105,19 @@ export class Pool {
     this.lightUniformBuffer = lightUniformBuffer;
     this.sphereUniformBuffer = sphereUniformBuffer;
     this.shadowUniformBuffer = shadowUniformBuffer;
+    this.sceneParamsBuffer = sceneParamsBuffer;
+    this.poolHalfExtent = poolHalfExtent;
 
     this.createGeometry();
     this.createPipeline();
+  }
+
+  /**
+   * Rebuilds pool wall/floor mesh when horizontal half-extent changes.
+   */
+  rebuildGeometry(halfExtent: number): void {
+    this.poolHalfExtent = halfExtent;
+    this.createGeometry();
   }
 
   /**
@@ -149,7 +169,7 @@ export class Pool {
       for (let j = 0; j < 4; j++) {
         const d = data[j];
         const pos = pickOctant(d);
-        positions.push(...pos);
+        positions.push(pos[0] * this.poolHalfExtent, pos[1], pos[2] * this.poolHalfExtent);
         vertexCount++;
       }
 
@@ -273,6 +293,7 @@ export class Pool {
         { binding: 6, resource: waterTexture.createView() },
         { binding: 7, resource: causticsTexture.createView() },
         { binding: 8, resource: { buffer: this.shadowUniformBuffer } },
+        { binding: 9, resource: { buffer: this.sceneParamsBuffer } },
       ],
     });
 

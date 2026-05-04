@@ -15,6 +15,7 @@
 @binding(7) @group(0) var skySampler : sampler;
 @binding(8) @group(0) var skyTexture : texture_cube<f32>;
 @binding(9) @group(0) var causticTexture : texture_2d<f32>;
+@binding(12) @group(0) var<uniform> scene : SceneParams;
 
 struct VertexOutput {
   @builtin(position) position : vec4f,
@@ -25,13 +26,13 @@ struct VertexOutput {
 fn vs_main(@location(0) position : vec3f) -> VertexOutput {
   var output : VertexOutput;
 
-  // Sample water height at this vertex position
-  let uv = position.xy * 0.5 + 0.5;
+  // Sample water height at this vertex position (world XZ stored in position.xy)
+  let uv = poolXZToUv(position.xy, scene.poolHalfExtent);
   let info = textureSampleLevel(waterTexture, waterSampler, uv, 0.0);
 
   // Transform from XY plane to XZ plane with height from texture
   var pos = position.xzy;
-  pos.y = info.r;
+  pos.y = waterHeightWorld(info.r, scene.poolHalfExtent);
 
   output.worldPos = pos;
   output.position = commonUniforms.viewProjectionMatrix * vec4f(pos, 1.0);

@@ -44,8 +44,8 @@ The water simulation uses a heightfield approach where each pixel in a 256×256 
 The wave equation is discretized using finite differences:
 
 ```
-velocity += (neighbor_average - height) * 2.0
-velocity *= 0.995  // damping
+velocity += (neighbor_average - height) * waveResponse  // default 1.0, tunable in Settings → Wave simulation
+velocity *= damping  // default ~0.997, tunable in Settings → Wave simulation
 height += velocity
 ```
 

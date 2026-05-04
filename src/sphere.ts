@@ -42,6 +42,9 @@ export class Sphere {
   /** Uniform buffer containing light direction vector */
   private lightUniformBuffer: GPUBuffer;
 
+  /** Pool dimensions for AO / caustic UV (`SceneParams`) */
+  private sceneParamsBuffer: GPUBuffer;
+
   /** Vertex buffer containing sphere vertex positions (unit sphere) */
   private positionBuffer!: GPUBuffer;
 
@@ -62,19 +65,22 @@ export class Sphere {
    * @param uniformBuffer - Buffer with view-projection matrix and eye position
    * @param lightUniformBuffer - Buffer with light direction
    * @param sphereUniformBuffer - Buffer for sphere position and radius
+   * @param sceneParamsBuffer - Pool half-extent / depth uniforms
    */
   constructor(
     device: GPUDevice,
     format: GPUTextureFormat,
     uniformBuffer: GPUBuffer,
     lightUniformBuffer: GPUBuffer,
-    sphereUniformBuffer: GPUBuffer
+    sphereUniformBuffer: GPUBuffer,
+    sceneParamsBuffer: GPUBuffer
   ) {
     this.device = device;
     this.format = format;
     this.commonUniformBuffer = uniformBuffer;
     this.sphereUniformBuffer = sphereUniformBuffer;
     this.lightUniformBuffer = lightUniformBuffer;
+    this.sceneParamsBuffer = sceneParamsBuffer;
 
     this.createGeometry();
     this.createPipeline();
@@ -329,6 +335,7 @@ export class Sphere {
         { binding: 3, resource: waterSampler },
         { binding: 4, resource: waterTexture.createView() },
         { binding: 5, resource: causticsTexture.createView() },
+        { binding: 6, resource: { buffer: this.sceneParamsBuffer } },
       ],
     });
 

@@ -14,6 +14,7 @@
 @binding(8) @group(0) var skyTexture : texture_cube<f32>;
 @binding(9) @group(0) var causticTexture : texture_2d<f32>;
 @binding(11) @group(0) var<uniform> waterUniforms : WaterUniforms;
+@binding(12) @group(0) var<uniform> scene : SceneParams;
 
 // Physical constants
 const IOR_AIR : f32 = 1.0;
@@ -40,18 +41,20 @@ fn getSphereColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32) -> vec3f {
     let sphereRadius = sphere.radius;
 
     // Distance-based darkening near pool walls
-    color *= 1.0 - 0.9 / pow((1.0 + sphereRadius - abs(point.x)) / sphereRadius, 3.0);
-    color *= 1.0 - 0.9 / pow((1.0 + sphereRadius - abs(point.z)) / sphereRadius, 3.0);
-    color *= 1.0 - 0.9 / pow((point.y + 1.0 + sphereRadius) / sphereRadius, 3.0);
+    let xzH = scene.poolHalfExtent;
+    let xzUv = 0.5 / xzH;
+    color *= 1.0 - 0.9 / pow((xzH + sphereRadius - abs(point.x)) / sphereRadius, 3.0);
+    color *= 1.0 - 0.9 / pow((xzH + sphereRadius - abs(point.z)) / sphereRadius, 3.0);
+    color *= 1.0 - 0.9 / pow((point.y + scene.poolDepth + sphereRadius) / sphereRadius, 3.0);
 
     // Diffuse lighting with caustics
     let sphereNormal = (point - sphere.center) / sphereRadius;
     let refractedLight = refract(-light.direction, vec3f(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
     var diffuse = max(0.0, dot(-refractedLight, sphereNormal)) * 0.5;
 
-    let info = textureSampleLevel(waterTexture, waterSampler, point.xz * 0.5 + 0.5, 0.0);
-    if (point.y < info.r) {
-        let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * 0.5 + 0.5;
+    let info = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(point.xz, xzH), 0.0);
+    if (point.y < waterHeightWorld(info.r, xzH)) {
+        let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * xzUv + vec2f(0.5);
         let caustic = textureSampleLevel(causticTexture, waterSampler, causticUV, 0.0);
         diffuse *= caustic.r * 4.0;
     }
@@ -63,16 +66,18 @@ fn getSphereColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32) -> vec3f {
 fn getWallColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32, poolHeight: f32) -> vec3f {
     var wallColor : vec3f;
     var normal = vec3f(0.0, 1.0, 0.0);
+    let xzH = scene.poolHalfExtent;
+    let xzUv = 0.5 / xzH;
 
     // Sample tile texture based on wall orientation
-    if (abs(point.x) > 0.999) {
-        wallColor = textureSampleLevel(tileTexture, tileSampler, point.yz * 0.5 + vec2f(1.0, 0.5), 0.0).rgb;
+    if (abs(point.x) > xzH * 0.999) {
+        wallColor = textureSampleLevel(tileTexture, tileSampler, vec2f(point.y * 0.5 + 1.0, point.z * xzUv + 0.5), 0.0).rgb;
         normal = vec3f(-point.x, 0.0, 0.0);
-    } else if (abs(point.z) > 0.999) {
-        wallColor = textureSampleLevel(tileTexture, tileSampler, point.yx * 0.5 + vec2f(1.0, 0.5), 0.0).rgb;
+    } else if (abs(point.z) > xzH * 0.999) {
+        wallColor = textureSampleLevel(tileTexture, tileSampler, vec2f(point.y * 0.5 + 1.0, point.x * xzUv + 0.5), 0.0).rgb;
         normal = vec3f(0.0, 0.0, -point.z);
     } else {
-        wallColor = textureSampleLevel(tileTexture, tileSampler, point.xz * 0.5 + 0.5, 0.0).rgb;
+        wallColor = textureSampleLevel(tileTexture, tileSampler, poolXZToFloorTileUv(point.xz, xzH), 0.0).rgb;
     }
 
     // Ambient occlusion
@@ -84,13 +89,13 @@ fn getWallColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32, poolHeight: f32) -> 
     let refractedLight = -refract(-light.direction, vec3f(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
     var diffuse = max(0.0, dot(refractedLight, normal));
 
-    let info = textureSampleLevel(waterTexture, waterSampler, point.xz * 0.5 + 0.5, 0.0);
-    if (point.y < info.r) {
-        let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * 0.5 + 0.5;
+    let info = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(point.xz, xzH), 0.0);
+    if (point.y < waterHeightWorld(info.r, xzH)) {
+        let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * xzUv + vec2f(0.5);
         let caustic = textureSampleLevel(causticTexture, waterSampler, causticUV, 0.0);
         scale += diffuse * caustic.r * 2.0 * caustic.g;
     } else {
-        let t = intersectCube(point, refractedLight, vec3f(-1.0, -poolHeight, -1.0), vec3f(1.0, 2.0, 1.0));
+        let t = intersectCube(point, refractedLight, vec3f(-xzH, -poolHeight, -xzH), vec3f(xzH, scene.poolRimMaxY, xzH));
         diffuse *= 1.0 / (1.0 + exp(-200.0 / (1.0 + 10.0 * (t.y - t.x)) * (point.y + refractedLight.y * t.y - 2.0 / 12.0)));
         scale += diffuse * 0.5;
     }
@@ -101,7 +106,8 @@ fn getWallColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32, poolHeight: f32) -> 
 // Traces a ray from water surface to find color
 fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     var color : vec3f;
-    let poolHeight = 1.0;
+    let poolHeight = scene.poolDepth;
+    let xzH = scene.poolHalfExtent;
     let IOR_WATER = waterUniforms.ior;
 
     // Check sphere intersection first (only if sphere is enabled)
@@ -114,11 +120,11 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
         color = getSphereColor(origin + ray * q, IOR_AIR, IOR_WATER);
     } else if (ray.y < 0.0) {
         // Ray going down - hit pool walls/floor
-        let t = intersectCube(origin, ray, vec3f(-1.0, -poolHeight, -1.0), vec3f(1.0, 2.0, 1.0));
+        let t = intersectCube(origin, ray, vec3f(-xzH, -poolHeight, -xzH), vec3f(xzH, scene.poolRimMaxY, xzH));
         color = getWallColor(origin + ray * t.y, IOR_AIR, IOR_WATER, poolHeight);
     } else {
         // Ray going up - hit walls or sky
-        let t = intersectCube(origin, ray, vec3f(-1.0, -poolHeight, -1.0), vec3f(1.0, 2.0, 1.0));
+        let t = intersectCube(origin, ray, vec3f(-xzH, -poolHeight, -xzH), vec3f(xzH, scene.poolRimMaxY, xzH));
         let hit = origin + ray * t.y;
         if (hit.y < 2.0 / 12.0) {
             color = getWallColor(hit, IOR_AIR, IOR_WATER, poolHeight);
@@ -142,7 +148,7 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
 @fragment
 fn fs_main(@location(0) worldPos : vec3f) -> @location(0) vec4f {
     // Sample normal with UV refinement for smooth appearance
-    var uv = worldPos.xz * 0.5 + 0.5;
+    var uv = poolXZToUv(worldPos.xz, scene.poolHalfExtent);
     var info = textureSampleLevel(waterTexture, waterSampler, uv, 0.0);
 
     // Iteratively refine UV based on normal offset

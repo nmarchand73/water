@@ -19,11 +19,11 @@
 import type { PipelineConfig } from './types';
 
 // Import shader modules
-import fullscreenVertShader from './shaders/water/fullscreen.vert.wgsl?raw';
-import dropFragShader from './shaders/water/drop.frag.wgsl?raw';
-import updateFragShader from './shaders/water/update.frag.wgsl?raw';
-import normalFragShader from './shaders/water/normal.frag.wgsl?raw';
-import sphereFragShader from './shaders/water/sphere.frag.wgsl?raw';
+import fullscreenVertShader from './shaders/water/fullscreen.vert.wgsl';
+import dropFragShader from './shaders/water/drop.frag.wgsl';
+import updateFragShader from './shaders/water/update.frag.wgsl';
+import normalFragShader from './shaders/water/normal.frag.wgsl';
+import sphereFragShader from './shaders/water/sphere.frag.wgsl';
 import surfaceVertShader from './shaders/water/surface.vert.wgsl';
 import surfaceAboveFragShader from './shaders/water/surface-above.frag.wgsl';
 import surfaceUnderFragShader from './shaders/water/surface-under.frag.wgsl';
@@ -79,6 +79,12 @@ export class Water {
   /** Sampler for skybox texture */
   private skySampler: GPUSampler;
 
+  /** Pool half-extent (XZ) in world units — must match `SceneParams` GPU buffer */
+  private poolHalfExtent: number;
+
+  /** Shared with pool / surface / caustics / sphere (`SceneParams` struct) */
+  private sceneParamsBuffer: GPUBuffer;
+
   // --- Physics State ---
   // Double-buffered textures for ping-pong rendering
 
@@ -108,6 +114,9 @@ export class Water {
 
   /** Sampler for simulation textures (linear filtering, clamp edges) */
   sampler: GPUSampler;
+
+  /** Shared simulation tuning (injection, wave response, velocity damping) for all sim passes */
+  private simulationParamsBuffer: GPUBuffer;
 
   // --- Simulation Pipelines ---
   // Each pipeline performs one step of the simulation
@@ -164,6 +173,8 @@ export class Water {
    * @param tileSampler - Tile texture sampler
    * @param skyTexture - Skybox cubemap texture
    * @param skySampler - Skybox sampler
+   * @param sceneParamsBuffer - Pool dimensions for GPU shaders
+   * @param poolHalfExtent - Initial horizontal half-size (X/Z) in world units
    */
   constructor(
     device: GPUDevice,
@@ -177,7 +188,9 @@ export class Water {
     tileTexture: GPUTexture,
     tileSampler: GPUSampler,
     skyTexture: GPUTexture,
-    skySampler: GPUSampler
+    skySampler: GPUSampler,
+    sceneParamsBuffer: GPUBuffer,
+    poolHalfExtent: number
   ) {
     this.device = device;
     this.width = width;
@@ -193,6 +206,8 @@ export class Water {
     this.tileSampler = tileSampler;
     this.skyTexture = skyTexture;
     this.skySampler = skySampler;
+    this.sceneParamsBuffer = sceneParamsBuffer;
+    this.poolHalfExtent = poolHalfExtent;
 
     // Create double-buffered simulation textures
     this.textureA = this.createTexture();
@@ -212,6 +227,13 @@ export class Water {
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
     });
+
+    this.simulationParamsBuffer = device.createBuffer({
+      label: 'Simulation params',
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.setSimulationParams(0.1, 1.0, 0.997);
 
     // Initialize all pipelines
     this.createPipelines();
@@ -361,6 +383,8 @@ export class Water {
         { binding: 0, resource: this.textureA.createView() },
         { binding: 1, resource: this.sampler },
         { binding: 2, resource: { buffer: pipelineObj.uniformBuffer } },
+        { binding: 3, resource: { buffer: this.simulationParamsBuffer } },
+        { binding: 4, resource: { buffer: this.sceneParamsBuffer } },
       ],
     });
 
@@ -420,6 +444,15 @@ export class Water {
   }
 
   /**
+   * Updates GPU uniforms for wave simulation feel (sphere displacement strength,
+   * neighbor coupling, velocity damping). Safe to call every frame.
+   */
+  setSimulationParams(sphereInject: number, waveResponse: number, damping: number): void {
+    const data = new Float32Array([sphereInject, waveResponse, damping, 0]);
+    this.device.queue.writeBuffer(this.simulationParamsBuffer, 0, data);
+  }
+
+  /**
    * Recomputes surface normals from current height data.
    *
    * Should be called after simulation steps, before rendering.
@@ -458,7 +491,7 @@ export class Water {
   /**
    * Creates the water surface mesh as a subdivided plane.
    *
-   * The plane spans from -1 to 1 on X and Z axes.
+   * The plane spans [-poolHalfExtent, poolHalfExtent] on X and Z axes.
    * Higher detail (200x200) provides smooth displacement from wave heights.
    */
   private createSurfaceMesh(): void {
@@ -466,13 +499,13 @@ export class Water {
     const positions: number[] = [];
     const indices: number[] = [];
 
-    // Generate vertex grid from -1 to 1 on X and Z
+    // Generate vertex grid covering the pool in X and Z (world units)
     for (let z = 0; z <= detail; z++) {
       const t = z / detail;
       for (let x = 0; x <= detail; x++) {
         const s = x / detail;
         // Store as XY initially (Z will be sampled from texture)
-        positions.push(2 * s - 1, 2 * t - 1, 0);
+        positions.push((2 * s - 1) * this.poolHalfExtent, (2 * t - 1) * this.poolHalfExtent, 0);
       }
     }
 
@@ -507,6 +540,14 @@ export class Water {
     });
     new Uint32Array(this.indexBuffer.getMappedRange()).set(indices);
     this.indexBuffer.unmap();
+  }
+
+  /**
+   * Rebuilds the water surface mesh when pool horizontal size changes.
+   */
+  rebuildSurfaceMesh(halfExtent: number): void {
+    this.poolHalfExtent = halfExtent;
+    this.createSurfaceMesh();
   }
 
   /**
@@ -560,6 +601,11 @@ export class Water {
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 11, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        {
+          binding: 12,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' },
+        },
       ],
     });
 
@@ -656,6 +702,7 @@ export class Water {
         { binding: 9, resource: this.causticsTexture.createView() },
         { binding: 10, resource: { buffer: this.shadowUniformBuffer } },
         { binding: 11, resource: { buffer: this.waterUniformBuffer } },
+        { binding: 12, resource: { buffer: this.sceneParamsBuffer } },
       ],
     });
 
@@ -762,6 +809,7 @@ export class Water {
         { binding: 3, resource: this.textureA.createView() },
         { binding: 4, resource: { buffer: this.shadowUniformBuffer } },
         { binding: 5, resource: { buffer: this.waterUniformBuffer } },
+        { binding: 6, resource: { buffer: this.sceneParamsBuffer } },
       ],
     });
 

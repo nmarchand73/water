@@ -11,6 +11,7 @@
 @binding(6) @group(0) var waterTexture : texture_2d<f32>;
 @binding(7) @group(0) var causticTexture : texture_2d<f32>;
 @binding(8) @group(0) var<uniform> shadows : ShadowUniforms;
+@binding(9) @group(0) var<uniform> scene : SceneParams;
 
 // Functions (intersectCube is in common/functions.wgsl)
 
@@ -21,26 +22,28 @@ fn fs_main(@location(0) localPos : vec3f) -> @location(0) vec4f {
 
   // Sample tile texture based on which face we're rendering
   // Use different coordinate pairs for different wall orientations
-  if (abs(point.x) > 0.999) {
-    // X-facing walls: use YZ coordinates
-    wallColor = textureSampleLevel(tileTexture, tileSampler, point.yz * 0.5 + vec2f(1.0, 0.5), 0.0).rgb;
-  } else if (abs(point.z) > 0.999) {
+  let xzHalf = scene.poolHalfExtent;
+  let xzToUv = 0.5 / xzHalf;
+  if (abs(point.x) > xzHalf * 0.999) {
+    // X-facing walls: use YZ coordinates (horizontal Z uses pool extent)
+    wallColor = textureSampleLevel(tileTexture, tileSampler, vec2f(point.y * 0.5 + 1.0, point.z * xzToUv + 0.5), 0.0).rgb;
+  } else if (abs(point.z) > xzHalf * 0.999) {
     // Z-facing walls: use YX coordinates
-    wallColor = textureSampleLevel(tileTexture, tileSampler, point.yx * 0.5 + vec2f(1.0, 0.5), 0.0).rgb;
+    wallColor = textureSampleLevel(tileTexture, tileSampler, vec2f(point.y * 0.5 + 1.0, point.x * xzToUv + 0.5), 0.0).rgb;
   } else {
     // Floor: use XZ coordinates
-    wallColor = textureSampleLevel(tileTexture, tileSampler, point.xz * 0.5 + 0.5, 0.0).rgb;
+    wallColor = textureSampleLevel(tileTexture, tileSampler, poolXZToFloorTileUv(point.xz, xzHalf), 0.0).rgb;
   }
 
   // Physical constants for light refraction
   let IOR_AIR = 1.0;
   let IOR_WATER = 1.333;
-  let poolHeight = 1.0;
+  let poolHeight = scene.poolDepth;
 
   // Determine surface normal based on face
   var normal = vec3f(0.0, 1.0, 0.0);
-  if (abs(point.x) > 0.999) { normal = vec3f(-point.x, 0.0, 0.0); }
-  else if (abs(point.z) > 0.999) { normal = vec3f(0.0, 0.0, -point.z); }
+  if (abs(point.x) > xzHalf * 0.999) { normal = vec3f(-point.x, 0.0, 0.0); }
+  else if (abs(point.z) > xzHalf * 0.999) { normal = vec3f(0.0, 0.0, -point.z); }
 
     // Ambient occlusion
     var scale = 0.5;
@@ -56,12 +59,12 @@ fn fs_main(@location(0) localPos : vec3f) -> @location(0) vec4f {
   let diffuse = max(0.0, dot(refractedLight, normal));
 
   // Sample water height at this XZ position
-  let waterInfo = textureSampleLevel(waterTexture, waterSampler, point.xz * 0.5 + 0.5, 0.0);
+  let waterInfo = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(point.xz, xzHalf), 0.0);
 
-  if (point.y < waterInfo.r) {
+  if (point.y < waterHeightWorld(waterInfo.r, xzHalf)) {
      // UNDERWATER: Apply caustic lighting
      // Project caustic UV based on refracted light direction
-     let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * 0.5 + 0.5;
+     let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * xzToUv + vec2f(0.5);
      let caustic = textureSampleLevel(causticTexture, tileSampler, causticUV, 0.0);
 
      var intensity = caustic.r;       // Caustic brightness
@@ -76,7 +79,7 @@ fn fs_main(@location(0) localPos : vec3f) -> @location(0) vec4f {
      scale += diffuse * intensity * 2.0 * sphereShadow;
   } else {
      // ABOVE WATER: Apply rim shadow at water edge
-     let t = intersectCube(point, refractedLight, vec3f(-1.0, -poolHeight, -1.0), vec3f(1.0, 2.0, 1.0));
+     let t = intersectCube(point, refractedLight, vec3f(-xzHalf, -poolHeight, -xzHalf), vec3f(xzHalf, scene.poolRimMaxY, xzHalf));
      let shadowFactor = 1.0 / (1.0 + exp(-200.0 / (1.0 + 10.0 * (t.y - t.x)) * (point.y + refractedLight.y * t.y - 2.0 / 12.0)));
      scale += diffuse * mix(1.0, shadowFactor, shadows.rim) * 0.5;
   }
@@ -84,7 +87,7 @@ fn fs_main(@location(0) localPos : vec3f) -> @location(0) vec4f {
   var finalColor = wallColor * scale;
 
   // Apply underwater color tint
-  if (point.y < waterInfo.r) {
+  if (point.y < waterHeightWorld(waterInfo.r, xzHalf)) {
      let underwaterColor = vec3f(0.4, 0.9, 1.0);
      finalColor *= underwaterColor * 1.2;
   }
