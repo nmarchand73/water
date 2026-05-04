@@ -10,5 +10,11 @@ export const DEFAULT_POOL_RIM_MAX_Y = 2.0;
 /** Default interactive sphere radius. */
 export const DEFAULT_BALL_RADIUS = 0.25;
 
+/** UFO mesh / physics / water proxy scale vs the shared "ball radius" slider (33% larger). */
+export const UFO_RADIUS_SCALE = 1.33;
+
+/** Max "Wave response" in the GUI - explicit heightfield step goes unstable above ~2 (NaNs / device lost). */
+export const MAX_WAVE_RESPONSE = 2.0;
+
 /** @deprecated use DEFAULT_POOL_HALF_EXTENT */
 export const POOL_HALF_EXTENT = DEFAULT_POOL_HALF_EXTENT;

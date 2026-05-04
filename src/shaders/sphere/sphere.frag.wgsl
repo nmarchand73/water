@@ -11,13 +11,13 @@
 @binding(6) @group(0) var<uniform> scene : SceneParams;
 
 @fragment
-fn fs_main(@location(0) localPos : vec3f, @location(1) worldPos : vec3f) -> @location(0) vec4f {
+fn fs_main(@location(0) modelNormal : vec3f, @location(1) worldPos : vec3f) -> @location(0) vec4f {
   // Physical constants for light refraction
   let IOR_AIR = 1.0;
   let IOR_WATER = 1.333;
 
-  // Base sphere color (gray)
-  var color = vec3f(0.5);
+  // Base color: gray sphere, slight metallic teal for UFO
+  var color = select(vec3f(0.5), vec3f(0.32, 0.48, 0.44), sphereUniforms.shapeKind > 0.5);
 
   let sphereRadius = sphereUniforms.radius;
   let point = worldPos;
@@ -37,7 +37,7 @@ fn fs_main(@location(0) localPos : vec3f, @location(1) worldPos : vec3f) -> @loc
 
   // Calculate refracted light direction (Snell's law)
   let refractedLight = refract(-light.direction, vec3f(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
-  let sphereNormal = normalize(localPos);
+  let sphereNormal = normalize(modelNormal);
 
   // Basic diffuse lighting
   var diffuse = max(0.0, dot(-refractedLight, sphereNormal)) * 0.5;

@@ -15,6 +15,108 @@
 // Import shader modules
 import sphereVertShader from './shaders/sphere/sphere.vert.wgsl';
 import sphereFragShader from './shaders/sphere/sphere.frag.wgsl';
+import type { ObjMesh } from './shapes/parse-ufo-obj';
+
+/** Revolved “flying saucer” profile (y, r), scaled to unit bounding sphere; spun in the vertex shader. */
+function buildUfoRevolvedMesh(): {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+} {
+  const raw: [number, number][] = [
+    [-0.52, 0.94],
+    [-0.3, 0.36],
+    [-0.08, 0.56],
+    [0.08, 0.46],
+    [0.26, 0.3],
+    [0.44, 0.08],
+  ];
+  let maxD = 0;
+  for (const [y, r] of raw) {
+    maxD = Math.max(maxD, Math.hypot(y, r));
+  }
+  const profile = raw.map(([y, r]) => [y / maxD, r / maxD] as [number, number]);
+
+  const stacks = profile.length;
+  const rings = 40;
+  const positions: number[] = [];
+  const idxMap: number[][] = [];
+  for (let i = 0; i < stacks; i++) {
+    idxMap[i] = [];
+    const [y, r] = profile[i];
+    for (let j = 0; j < rings; j++) {
+      const th = (j / rings) * Math.PI * 2;
+      const x = r * Math.cos(th);
+      const z = r * Math.sin(th);
+      idxMap[i][j] = positions.length / 3;
+      positions.push(x, y, z);
+    }
+  }
+
+  const indices: number[] = [];
+  for (let i = 0; i < stacks - 1; i++) {
+    for (let j = 0; j < rings; j++) {
+      const jn = (j + 1) % rings;
+      const v00 = idxMap[i][j];
+      const v01 = idxMap[i][jn];
+      const v10 = idxMap[i + 1][j];
+      const v11 = idxMap[i + 1][jn];
+      indices.push(v00, v10, v01);
+      indices.push(v01, v10, v11);
+    }
+  }
+
+  const vertCount = positions.length / 3;
+  const acc = new Float32Array(vertCount * 3);
+  for (let t = 0; t < indices.length; t += 3) {
+    const ia = indices[t];
+    const ib = indices[t + 1];
+    const ic = indices[t + 2];
+    const ax = positions[ia * 3],
+      ay = positions[ia * 3 + 1],
+      az = positions[ia * 3 + 2];
+    const bx = positions[ib * 3],
+      by = positions[ib * 3 + 1],
+      bz = positions[ib * 3 + 2];
+    const cx = positions[ic * 3],
+      cy = positions[ic * 3 + 1],
+      cz = positions[ic * 3 + 2];
+    const abx = bx - ax,
+      aby = by - ay,
+      abz = bz - az;
+    const acx = cx - ax,
+      acy = cy - ay,
+      acz = cz - az;
+    let nx = aby * acz - abz * acy;
+    let ny = abz * acx - abx * acz;
+    let nz = abx * acy - aby * acx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len;
+    ny /= len;
+    nz /= len;
+    for (const vi of [ia, ib, ic]) {
+      acc[vi * 3] += nx;
+      acc[vi * 3 + 1] += ny;
+      acc[vi * 3 + 2] += nz;
+    }
+  }
+  const normals = new Float32Array(vertCount * 3);
+  for (let i = 0; i < vertCount; i++) {
+    const x = acc[i * 3],
+      y = acc[i * 3 + 1],
+      z = acc[i * 3 + 2];
+    const L = Math.hypot(x, y, z) || 1;
+    normals[i * 3] = x / L;
+    normals[i * 3 + 1] = y / L;
+    normals[i * 3 + 2] = z / L;
+  }
+
+  return {
+    positions: new Float32Array(positions),
+    normals,
+    indices: new Uint32Array(indices),
+  };
+}
 
 /**
  * Renders an interactive sphere with realistic underwater lighting.
@@ -45,16 +147,22 @@ export class Sphere {
   /** Pool dimensions for AO / caustic UV (`SceneParams`) */
   private sceneParamsBuffer: GPUBuffer;
 
-  /** Vertex buffer containing sphere vertex positions (unit sphere) */
-  private positionBuffer!: GPUBuffer;
+  /** Unit sphere positions + normals (normal = position on unit sphere) */
+  private spherePositionBuffer!: GPUBuffer;
+  private sphereNormalBuffer!: GPUBuffer;
+  private sphereIndexBuffer!: GPUBuffer;
+  private sphereIndexCount!: number;
 
-  /** Index buffer for indexed drawing */
-  private indexBuffer!: GPUBuffer;
+  /** UFO revolved mesh (unit bounding sphere) */
+  private ufoPositionBuffer!: GPUBuffer;
+  private ufoNormalBuffer!: GPUBuffer;
+  private ufoIndexBuffer!: GPUBuffer;
+  private ufoIndexCount!: number;
 
-  /** Number of indices to draw */
-  private vertexCount!: number;
+  /** Which mesh to draw */
+  private meshKind: 'sphere' | 'ufo' = 'sphere';
 
-  /** The render pipeline for sphere rendering */
+  /** The render pipeline for sphere / UFO rendering */
   private pipeline!: GPURenderPipeline;
 
   /**
@@ -82,21 +190,60 @@ export class Sphere {
     this.lightUniformBuffer = lightUniformBuffer;
     this.sceneParamsBuffer = sceneParamsBuffer;
 
-    this.createGeometry();
+    this.createSphereGeometry();
+    this.createUfoGeometry();
     this.createPipeline();
   }
 
   /**
-   * Updates the sphere's position and size in the uniform buffer.
-   *
-   * Called each frame when the sphere moves (via physics or user interaction).
-   *
-   * @param center - The sphere center position [x, y, z]
-   * @param radius - The sphere radius
+   * Writes GPU uniforms: center, radius, Y spin (for UFO), shapeKind (0 sphere / 1 UFO).
    */
-  update(center: number[], radius: number): void {
-    const data = new Float32Array([...center, radius]);
+  update(center: number[], radius: number, spinY: number, shapeKind: number): void {
+    const data = new Float32Array([center[0], center[1], center[2], radius, spinY, shapeKind, 0, 0]);
     this.device.queue.writeBuffer(this.sphereUniformBuffer, 0, data);
+  }
+
+  /** Switches rendered mesh between sphere and UFO (same physics bounding sphere). */
+  setMeshKind(kind: 'sphere' | 'ufo'): void {
+    this.meshKind = kind;
+  }
+
+  /**
+   * Replace the UFO mesh with external OBJ data (centered, unit bounding sphere — see `parse-ufo-obj`).
+   * Destroys the previous UFO GPU buffers (procedural or prior OBJ).
+   */
+  setUfoMeshFromData(mesh: ObjMesh): void {
+    this.ufoPositionBuffer.destroy();
+    this.ufoNormalBuffer.destroy();
+    this.ufoIndexBuffer.destroy();
+    this.ufoIndexCount = mesh.indices.length;
+
+    this.ufoPositionBuffer = this.device.createBuffer({
+      label: 'UFO Position Buffer (OBJ)',
+      size: mesh.positions.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this.ufoPositionBuffer.getMappedRange()).set(mesh.positions);
+    this.ufoPositionBuffer.unmap();
+
+    this.ufoNormalBuffer = this.device.createBuffer({
+      label: 'UFO Normal Buffer (OBJ)',
+      size: mesh.normals.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this.ufoNormalBuffer.getMappedRange()).set(mesh.normals);
+    this.ufoNormalBuffer.unmap();
+
+    this.ufoIndexBuffer = this.device.createBuffer({
+      label: 'UFO Index Buffer (OBJ)',
+      size: mesh.indices.byteLength,
+      usage: GPUBufferUsage.INDEX,
+      mappedAtCreation: true,
+    });
+    new Uint32Array(this.ufoIndexBuffer.getMappedRange()).set(mesh.indices);
+    this.ufoIndexBuffer.unmap();
   }
 
   /**
@@ -112,7 +259,7 @@ export class Sphere {
    * - detail=1: 8 triangles (octahedron)
    * - detail=10: 800 triangles (smooth sphere)
    */
-  private createGeometry(): void {
+  private createSphereGeometry(): void {
     const detail = 10; // Subdivision level for smooth sphere
 
     /**
@@ -221,33 +368,70 @@ export class Sphere {
       }
     }
 
-    this.vertexCount = finalIndices.length;
+    this.sphereIndexCount = finalIndices.length;
 
-    // Flatten vertex positions into a single array
+    // Flatten vertex positions; unit sphere: normal = position
     const finalPositions: number[] = [];
     for (const p of indexer.unique) {
       finalPositions.push(...p);
     }
+    const finalNormals = new Float32Array(finalPositions);
 
-    // Create and populate vertex buffer
-    this.positionBuffer = this.device.createBuffer({
-      label: 'Sphere Vertex Buffer',
+    this.spherePositionBuffer = this.device.createBuffer({
+      label: 'Sphere Position Buffer',
       size: finalPositions.length * 4,
       usage: GPUBufferUsage.VERTEX,
       mappedAtCreation: true,
     });
-    new Float32Array(this.positionBuffer.getMappedRange()).set(finalPositions);
-    this.positionBuffer.unmap();
+    new Float32Array(this.spherePositionBuffer.getMappedRange()).set(finalPositions);
+    this.spherePositionBuffer.unmap();
 
-    // Create and populate index buffer
-    this.indexBuffer = this.device.createBuffer({
+    this.sphereNormalBuffer = this.device.createBuffer({
+      label: 'Sphere Normal Buffer',
+      size: finalNormals.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this.sphereNormalBuffer.getMappedRange()).set(finalNormals);
+    this.sphereNormalBuffer.unmap();
+
+    this.sphereIndexBuffer = this.device.createBuffer({
       label: 'Sphere Index Buffer',
       size: finalIndices.length * 4,
       usage: GPUBufferUsage.INDEX,
       mappedAtCreation: true,
     });
-    new Uint32Array(this.indexBuffer.getMappedRange()).set(finalIndices);
-    this.indexBuffer.unmap();
+    new Uint32Array(this.sphereIndexBuffer.getMappedRange()).set(finalIndices);
+    this.sphereIndexBuffer.unmap();
+  }
+
+  private createUfoGeometry(): void {
+    const { positions, normals, indices } = buildUfoRevolvedMesh();
+    this.ufoIndexCount = indices.length;
+    this.ufoPositionBuffer = this.device.createBuffer({
+      label: 'UFO Position Buffer',
+      size: positions.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this.ufoPositionBuffer.getMappedRange()).set(positions);
+    this.ufoPositionBuffer.unmap();
+    this.ufoNormalBuffer = this.device.createBuffer({
+      label: 'UFO Normal Buffer',
+      size: normals.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this.ufoNormalBuffer.getMappedRange()).set(normals);
+    this.ufoNormalBuffer.unmap();
+    this.ufoIndexBuffer = this.device.createBuffer({
+      label: 'UFO Index Buffer',
+      size: indices.byteLength,
+      usage: GPUBufferUsage.INDEX,
+      mappedAtCreation: true,
+    });
+    new Uint32Array(this.ufoIndexBuffer.getMappedRange()).set(indices);
+    this.ufoIndexBuffer.unmap();
   }
 
   /**
@@ -280,14 +464,12 @@ export class Sphere {
         entryPoint: 'vs_main',
         buffers: [
           {
-            arrayStride: 3 * 4, // 3 floats per vertex (x, y, z)
-            attributes: [
-              {
-                shaderLocation: 0,
-                offset: 0,
-                format: 'float32x3',
-              },
-            ],
+            arrayStride: 3 * 4,
+            attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+          },
+          {
+            arrayStride: 3 * 4,
+            attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }],
           },
         ],
       },
@@ -339,11 +521,18 @@ export class Sphere {
       ],
     });
 
-    // Issue draw commands
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, this.positionBuffer);
-    passEncoder.setIndexBuffer(this.indexBuffer, 'uint32');
-    passEncoder.drawIndexed(this.vertexCount);
+    if (this.meshKind === 'ufo') {
+      passEncoder.setVertexBuffer(0, this.ufoPositionBuffer);
+      passEncoder.setVertexBuffer(1, this.ufoNormalBuffer);
+      passEncoder.setIndexBuffer(this.ufoIndexBuffer, 'uint32');
+      passEncoder.drawIndexed(this.ufoIndexCount);
+    } else {
+      passEncoder.setVertexBuffer(0, this.spherePositionBuffer);
+      passEncoder.setVertexBuffer(1, this.sphereNormalBuffer);
+      passEncoder.setIndexBuffer(this.sphereIndexBuffer, 'uint32');
+      passEncoder.drawIndexed(this.sphereIndexCount);
+    }
   }
 }

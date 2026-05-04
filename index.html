@@ -9,6 +9,7 @@ Released under the MIT license
 <!doctype html>
 <html>
   <head>
+    <meta charset="utf-8" />
     <title>WebGPU Water</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -122,7 +123,7 @@ Released under the MIT license
         text-align: center;
         box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
       }
-      /* Bouton sur le bord du panneau quand la barre est ouverte */
+      /* Help-toggle hugs panel edge when sidebar is open */
       #help:not(.collapsed) + #help-toggle {
         right: 292px;
       }
@@ -210,95 +211,110 @@ Released under the MIT license
       <h1>WebGPU Water</h1>
       <div class="help-body-scroll">
       <p>
-        Made by
-        <a href="http://madebyevan.com/" target="_blank" rel="noopener noreferrer">Evan Wallace</a>
-      </p>
-      <p>
-        Ported to WebGPU by
-        <a href="https://github.com/jeantimex" target="_blank" rel="noopener noreferrer"
+        Original by
+        <a href="http://madebyevan.com/" target="_blank" rel="noopener noreferrer">Evan Wallace</a
+        >, WebGPU port
+        <a href="https://github.com/jeantimex/webgpu-water" target="_blank" rel="noopener noreferrer"
           >jeantimex</a
-        >
-        (upstream:
-        <a
-          href="https://github.com/jeantimex/webgpu-water"
-          target="_blank"
-          rel="noopener noreferrer"
-          >webgpu-water</a
-        >)
-      </p>
-      <p>
-        <strong>This build</strong> is maintained by
-        <a href="https://github.com/nmarchand73" target="_blank" rel="noopener noreferrer"
-          >Nicolas Marchand</a
-        >
-        (<a href="https://github.com/nmarchand73" target="_blank" rel="noopener noreferrer"
-          >@nmarchand73</a
-        >). Source:
+        >, this fork
         <a href="https://github.com/nmarchand73/water" target="_blank" rel="noopener noreferrer"
           >nmarchand73/water</a
-        >
-        · Live:
-        <a href="https://nmarchand73.github.io/water/" target="_blank" rel="noopener noreferrer"
-          >nmarchand73.github.io/water</a
-        >
-      </p>
-      <h2>Fork updates (Marchand):</h2>
-      <ul>
-        <li>Pointer → water ripples: correct device-pixel ray hit (so clicks make waves)</li>
-        <li>WGSL <code>#include</code> via Vite (no raw imports on entry shaders)</li>
-        <li>Pool / world height scaling aligned in shaders</li>
-        <li>Gravity (G) on by default; optional buoyant sphere physics</li>
-        <li>Help panel: collapsed by default, full scroll, menu toggle (top-right)</li>
-        <li>GitHub Pages deploy with base <code>/water/</code></li>
-      </ul>
-      <p>
-        This demo requires a browser that supports WebGPU. If you can't run the demo, you can still
-        see the original WebGL implementation at
+        >. WebGPU required; classic WebGL version:
         <a href="https://madebyevan.com/webgl-water/" target="_blank" rel="noopener noreferrer"
-          >madebyevan.com/webgl-water/</a
+          >madebyevan.com/webgl-water</a
         >.
       </p>
-      <h2>Interactions:</h2>
+
+      <h2>Water surface (simulation)</h2>
+      <p>
+        Instead of solving the full 3D Navier-Stokes equations for an incompressible fluid, this demo
+        uses a <b>2D height field</b> h(x,z,t): each texel stores surface height (red) and one
+        <b>vertical velocity</b> component (green). That is a standard <i>reduced model</i>: only the
+        free surface moves; the bulk flow inside the water volume is not simulated.
+      </p>
+      <p>
+        Each step averages the four cardinal neighbors. On a square grid, that average matches the usual
+        <b>five-point stencil</b> for the horizontal Laplacian: it approximates the sum of second
+        partials (d^2 h / dx^2 + d^2 h / dz^2) up to scaling. The shader adds (neighbor average minus
+        local h) into velocity with gain <b>Wave response</b>, then advances height by integrating
+        velocity. That is <b>explicit</b> integration of neighbor coupling (same structure as a discrete
+        wave / diffusion formulation; compare to a leapfrog or implicit scheme in a PDE course). If the
+        gain is too large, the timestep blows up (classic stability bound); the slider cap prevents that.
+        <b>Velocity damping</b> plays the role of viscosity and energy leaving the finite domain.
+      </p>
+      <p>
+        Ripples and the moving sphere/UFO apply forcing in other passes. Two textures <b>ping-pong</b>:
+        render from texture A to B, swap A and B, repeat.
+      </p>
+
+      <h2>Floating object</h2>
+      <p>
+        With gravity, buoyancy uses <b>Archimedes' principle</b> in a blended form: the net vertical
+        force is driven by the <b>fraction of the sphere below the water plane y = 0</b>, as if
+        buoyant force rho_water g V_sub and weight rho_body g V swap roles by a smooth interpolation.
+        The <b>density</b> control changes that balance (heavier object vs water). The fluid does not
+        receive reaction forces from the solid (no coupled fluid-solid time stepping), so this is a
+        one-way model for real-time motion, not a research CFD solve.
+      </p>
+
+      <h2>Rendering &amp; optics</h2>
+      <p>
+        The air-water interface is treated with geometric optics. <b>Snell's law</b> ties incident and
+        refracted ray directions: n1 sin t1 = n2 sin t2 for indices n1, n2 (air ~1.0, water IOR about
+        1.33). The shader traces refracted rays for underwater lookup. <b>Fresnel</b> weighting splits
+        energy between reflected and transmitted paths as a function of angle (Schlick-style terms are
+        common in graphics; behavior you know from intro physics: more mirror-like at grazing incidence).
+        Reflections mix sky cubemap and scene color.
+      </p>
+      <p>
+        <b>Caustics</b> are focused irradiance on the pool floor: the wavy surface refracts parallel
+        sunlight into envelopes that brighten where ray density peaks (same idea as light patterns under
+        a pool). This implementation uses a fast screen-space approximation (
+        <a
+          href="https://medium.com/@evanwallace/rendering-realtime-caustics-in-webgl-2a99a29a0b2c"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Evan Wallace</a
+        >). Shadows and rim terms are analytic shortcuts in the fragment shader instead of global
+        illumination.
+      </p>
+
+      <h2>With unlimited GPU power</h2>
+      <p>
+        This demo trades physics detail for 60+ FPS on a laptop. If compute were not a limit, you
+        would likely move to <b>3D incompressible flow</b> (Navier-Stokes or lattice Boltzmann) with a
+        proper <b>free-surface</b> representation (level sets, cut-cell grids, or hybrid FLIP/PIC
+        particles) instead of a single height per column. You could add <b>two-way coupling</b> so the
+        solid pushes the fluid and vortices and pressure react back (CFD with moving bodies), plus
+        <b>turbulence</b> (LES or even DNS on a fine enough grid).
+      </p>
+      <p>
+        On the light side, <b>path tracing</b> or photon mapping could replace analytic caustics;
+        <b>volumetric</b> absorption and scattering in the water (Beer-Lambert, single-scattering
+        integrals) would make depth and color more physical. <b>Dispersion</b>-correct water waves
+        (frequency-dependent speed) and <b>foam / spray</b> from sheet breakup would need extra passes
+        or particles. Grid resolution could jump by orders of magnitude with <b>adaptive refinement</b>
+        near the object and shore.
+      </p>
+
+      <h2>Controls</h2>
       <ul>
-        <li>Draw on the water to make ripples</li>
-        <li>Drag the background or <b>Right-click</b> to rotate the camera</li>
-        <li>Use the <b>Mouse wheel</b> to zoom in and out</li>
-        <li>Press SPACEBAR to pause and unpause</li>
-        <li>Drag the sphere to move it around</li>
-        <li>Press the L key to set the light direction</li>
-        <li>Press the G key to toggle gravity (on by default)</li>
-        <li>Click the <b>menu</b> icon (top-right) to show or hide this panel</li>
-      </ul>
-      <h2>Features:</h2>
-      <ul>
-        <li>Raytraced reflections and refractions</li>
-        <li>Analytic ambient occlusion</li>
-        <li>Heightfield water simulation</li>
-        <li>Adjustable object density (physics)</li>
-        <li>Soft shadows</li>
-        <li>
-          Real-time
-          <a
-            href="https://medium.com/@evanwallace/rendering-realtime-caustics-in-webgl-2a99a29a0b2c"
-            target="_blank"
-            rel="noopener noreferrer"
-            >Caustics</a
-          >
-        </li>
+        <li>Draw on the water: ripples</li>
+        <li>Drag background or <b>right-drag</b>: orbit camera, <b>Wheel</b>: zoom</li>
+        <li><b>Space</b>: pause, <b>G</b>: gravity, <b>L</b> (hold): light from view</li>
+        <li>Drag sphere / UFO, <b>Settings</b>: object, water, pool, wave tuning</li>
+        <li><b>Menu</b> (top-right): show or hide this panel</li>
       </ul>
       <p>
         <small
-          >Tile texture from
+          >Tile texture:
           <a
             href="http://www.flickr.com/photos/zooboing/3682834083/"
             target="_blank"
             rel="noopener noreferrer"
             >zooboing</a
           >
-          on Flickr</small
-        >
-        <small
-          >Last updated: May 4, 2026 (fork: Nicolas Marchand / @nmarchand73)</small
+          , May 4, 2026</small
         >
       </p>
       </div>

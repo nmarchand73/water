@@ -21,6 +21,25 @@ const IOR_AIR : f32 = 1.0;
 const ABOVEwaterColor : vec3f = vec3f(0.25, 1.0, 1.25);
 const UNDERwaterColor : vec3f = vec3f(0.4, 0.9, 1.0);
 
+// Horizontal disc at object center Y — UFO proxy in water rays (no full bounding sphere).
+fn intersectHorizontalDisc(origin: vec3f, ray: vec3f, discCenter: vec3f, discRadius: f32) -> f32 {
+    let denom = ray.y;
+    if (abs(denom) < 1e-5) {
+        return 1.0e6;
+    }
+    let t = (discCenter.y - origin.y) / denom;
+    if (t <= 0.0) {
+        return 1.0e6;
+    }
+    let p = origin + ray * t;
+    let dx = p.x - discCenter.x;
+    let dz = p.z - discCenter.z;
+    if (dx * dx + dz * dz <= discRadius * discRadius) {
+        return t;
+    }
+    return 1.0e6;
+}
+
 // Ray-sphere intersection
 fn intersectSphere(origin: vec3f, ray: vec3f, sphereCenter: vec3f, sphereRadius: f32) -> f32 {
     let toSphere = origin - sphereCenter;
@@ -51,6 +70,30 @@ fn getSphereColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32) -> vec3f {
     let sphereNormal = (point - sphere.center) / sphereRadius;
     let refractedLight = refract(-light.direction, vec3f(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
     var diffuse = max(0.0, dot(-refractedLight, sphereNormal)) * 0.5;
+
+    let info = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(point.xz, xzH), 0.0);
+    if (point.y < waterHeightWorld(info.r, xzH)) {
+        let causticUV = 0.75 * (point.xz - point.y * refractedLight.xz / refractedLight.y) * xzUv + vec2f(0.5);
+        let caustic = textureSampleLevel(causticTexture, waterSampler, causticUV, 0.0);
+        diffuse *= caustic.r * 4.0;
+    }
+    color += diffuse;
+    return color;
+}
+
+// UFO: flat disc at physics center Y, same radius as bounding circle — visible through water without ghost sphere above.
+fn getUfoDiscColor(point: vec3f, ray: vec3f, IOR_AIR: f32, IOR_WATER: f32) -> vec3f {
+    var color = vec3f(0.32, 0.48, 0.44);
+    let R = sphere.radius;
+    let xzH = scene.poolHalfExtent;
+    let xzUv = 0.5 / xzH;
+    color *= 1.0 - 0.9 / pow((xzH + R - abs(point.x)) / R, 3.0);
+    color *= 1.0 - 0.9 / pow((xzH + R - abs(point.z)) / R, 3.0);
+    color *= 1.0 - 0.9 / pow((point.y + scene.poolDepth + R) / R, 3.0);
+
+    let n = select(vec3f(0.0, -1.0, 0.0), vec3f(0.0, 1.0, 0.0), ray.y < 0.0);
+    let refractedLight = refract(-light.direction, vec3f(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
+    var diffuse = max(0.0, dot(-refractedLight, n)) * 0.5;
 
     let info = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(point.xz, xzH), 0.0);
     if (point.y < waterHeightWorld(info.r, xzH)) {
@@ -110,14 +153,26 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     let xzH = scene.poolHalfExtent;
     let IOR_WATER = waterUniforms.ior;
 
-    // Check sphere intersection first (only if sphere is enabled)
+    // Sphere: full analytical sphere. UFO: horizontal disc at center.y (same radius) so water
+    // refraction shows the saucer without the old “ghost ball” above the mesh.
     var q = 1.0e6;
+    var hitUfo = false;
     if (shadows.sphere > 0.5) {
-        q = intersectSphere(origin, ray, sphere.center, sphere.radius);
+        if (sphere.shapeKind < 0.5) {
+            q = intersectSphere(origin, ray, sphere.center, sphere.radius);
+        } else {
+            q = intersectHorizontalDisc(origin, ray, sphere.center, sphere.radius);
+            hitUfo = q < 1.0e6;
+        }
     }
 
     if (q < 1.0e6) {
-        color = getSphereColor(origin + ray * q, IOR_AIR, IOR_WATER);
+        let hit = origin + ray * q;
+        color = select(
+            getSphereColor(hit, IOR_AIR, IOR_WATER),
+            getUfoDiscColor(hit, ray, IOR_AIR, IOR_WATER),
+            hitUfo
+        );
     } else if (ray.y < 0.0) {
         // Ray going down - hit pool walls/floor
         let t = intersectCube(origin, ray, vec3f(-xzH, -poolHeight, -xzH), vec3f(xzH, scene.poolRimMaxY, xzH));

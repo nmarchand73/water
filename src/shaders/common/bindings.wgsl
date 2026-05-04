@@ -11,10 +11,13 @@ struct LightUniforms {
    direction : vec3f,
 }
 
-// Sphere for ray intersection and displacement
+// Sphere / buoy object: center + radius for physics; spin + shape for rendering only
 struct SphereUniforms {
   center : vec3f,
   radius : f32,
+  spinY : f32,       // radians, applied to UFO mesh (and ignored for sphere shading path)
+  shapeKind : f32,   // 0 = sphere, 1 = UFO (same bounding sphere for physics)
+  _pad : vec2f,
 }
 
 // Shadow toggle flags

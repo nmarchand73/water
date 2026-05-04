@@ -37,7 +37,11 @@ import {
   DEFAULT_POOL_DEPTH,
   DEFAULT_POOL_HALF_EXTENT,
   DEFAULT_POOL_RIM_MAX_Y,
+  UFO_RADIUS_SCALE,
+  MAX_WAVE_RESPONSE,
 } from './scene-constants';
+import ufoObjUrl from './shapes/UFO_Saucer.obj?url';
+import { fetchAndParseUfoObj } from './shapes/parse-ufo-obj';
 
 /**
  * Main initialization function.
@@ -179,9 +183,9 @@ async function init(): Promise<void> {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // Sphere position and radius (vec3 + float = 16 bytes)
+  // SphereUniforms: center, radius, spinY, shapeKind, pad (32 bytes - see bindings.wgsl)
   const sphereUniformBuffer = device.createBuffer({
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -267,6 +271,13 @@ async function init(): Promise<void> {
     sceneParamsBuffer
   );
 
+  try {
+    const ufoMesh = await fetchAndParseUfoObj(ufoObjUrl);
+    sphere.setUfoMeshFromData(ufoMesh);
+  } catch (e) {
+    console.warn('Could not load shapes/UFO_Saucer.obj; using built-in saucer mesh.', e);
+  }
+
   // Create water simulation (256x256 resolution)
   const water = new Water(
     device,
@@ -285,12 +296,13 @@ async function init(): Promise<void> {
     sceneDims.poolHalfExtent
   );
 
-  /** Wave simulation tuning (Settings → Wave simulation). */
+  /** Wave simulation tuning (Settings, Wave simulation folder). */
   const waveSim = {
     sphereInject: 0.1,
     waveResponse: 1.0,
     damping: 0.997,
   };
+  waveSim.waveResponse = Math.min(waveSim.waveResponse, MAX_WAVE_RESPONSE);
 
   const waveSimGui: {
     inject?: { updateDisplay: () => void };
@@ -318,6 +330,9 @@ async function init(): Promise<void> {
   /** Whether simulation is paused */
   let paused = false;
 
+  /** Accumulated Y rotation for UFO mesh (radians). */
+  let ufoSpin = 0;
+
   // --- GUI ---
   const gui = new GUI({ title: 'Settings' });
   gui.close(); // Collapse by default
@@ -338,19 +353,6 @@ async function init(): Promise<void> {
     fresnelMin: 0.25,
   };
 
-  objectFolder
-    .add(settings, 'object', ['Sphere', 'None'])
-    .name('Object')
-    .onChange((v: string) => {
-      const isVisible = v === 'Sphere';
-      // Update shadow flags when sphere visibility changes: rim=1, sphere=isVisible, ao=1
-      device.queue.writeBuffer(
-        shadowUniformBuffer,
-        0,
-        new Float32Array([1.0, isVisible ? 1.0 : 0.0, 1.0, 0.0])
-      );
-      (document.activeElement as HTMLElement)?.blur();
-    });
   const gravityController = objectFolder
     .add(settings, 'gravity')
     .name('Toggle Gravity')
@@ -384,6 +386,56 @@ async function init(): Promise<void> {
   // Initialize density control visibility
   updateDensityVisibility();
 
+  /** Visual + physics + water radius for the current object (UFO is scaled up vs sphere). */
+  function effectiveObjectRadius(): number {
+    return settings.object === 'UFO'
+      ? sceneDims.ballRadius * UFO_RADIUS_SCALE
+      : sceneDims.ballRadius;
+  }
+
+  /** Writes sphere/UFO GPU uniforms; advances UFO spin when `dtSpin > 0` and object is UFO. */
+  function writeSphereUniforms(dtSpin: number): void {
+    if (settings.object === 'UFO' && dtSpin > 0 && !paused) {
+      ufoSpin += dtSpin * 2.4;
+    }
+    sphere.setMeshKind(settings.object === 'UFO' ? 'ufo' : 'sphere');
+    const shapeKind = settings.object === 'UFO' ? 1 : 0;
+    const spinY = settings.object === 'UFO' ? ufoSpin : 0;
+    sphere.update(center.toArray(), effectiveObjectRadius(), spinY, shapeKind);
+  }
+
+  function objectIsSolid(): boolean {
+    return settings.object === 'Sphere' || settings.object === 'UFO';
+  }
+
+  objectFolder
+    .add(settings, 'object', ['Sphere', 'UFO', 'None'])
+    .name('Object')
+    .onChange((v: string) => {
+      const isVisible = v === 'Sphere' || v === 'UFO';
+      // Update shadow flags when sphere visibility changes: rim=1, sphere=isVisible, ao=1
+      device.queue.writeBuffer(
+        shadowUniformBuffer,
+        0,
+        new Float32Array([1.0, isVisible ? 1.0 : 0.0, 1.0, 0.0])
+      );
+      const r = effectiveObjectRadius();
+      center.x = Math.max(
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.x)
+      );
+      center.y = Math.max(
+        r - sceneDims.poolDepth,
+        Math.min(10, center.y)
+      );
+      center.z = Math.max(
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.z)
+      );
+      writeSphereUniforms(0);
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
   sceneFolder
     .add(settings, 'followCamera')
     .name('Light From Camera')
@@ -398,15 +450,16 @@ async function init(): Promise<void> {
       syncSceneParams();
       pool.rebuildGeometry(sceneDims.poolHalfExtent);
       water.rebuildSurfaceMesh(sceneDims.poolHalfExtent);
+      const r = effectiveObjectRadius();
       center.x = Math.max(
-        sceneDims.ballRadius - sceneDims.poolHalfExtent,
-        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.x)
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.x)
       );
       center.z = Math.max(
-        sceneDims.ballRadius - sceneDims.poolHalfExtent,
-        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.z)
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.z)
       );
-      sphere.update(center.toArray(), sceneDims.ballRadius);
+      writeSphereUniforms(0);
       (document.activeElement as HTMLElement)?.blur();
     });
 
@@ -415,9 +468,10 @@ async function init(): Promise<void> {
     .name('Pool depth')
     .onChange(() => {
       syncSceneParams();
-      if (center.y < sceneDims.ballRadius - sceneDims.poolDepth) {
-        center.y = sceneDims.ballRadius - sceneDims.poolDepth;
-        sphere.update(center.toArray(), sceneDims.ballRadius);
+      const r = effectiveObjectRadius();
+      if (center.y < r - sceneDims.poolDepth) {
+        center.y = r - sceneDims.poolDepth;
+        writeSphereUniforms(0);
       }
       (document.activeElement as HTMLElement)?.blur();
     });
@@ -434,19 +488,20 @@ async function init(): Promise<void> {
     .add(sceneDims, 'ballRadius', 0.05, 1.0, 0.01)
     .name('Ball radius')
     .onChange(() => {
+      const r = effectiveObjectRadius();
       center.x = Math.max(
-        sceneDims.ballRadius - sceneDims.poolHalfExtent,
-        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.x)
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.x)
       );
       center.y = Math.max(
-        sceneDims.ballRadius - sceneDims.poolDepth,
+        r - sceneDims.poolDepth,
         Math.min(10, center.y)
       );
       center.z = Math.max(
-        sceneDims.ballRadius - sceneDims.poolHalfExtent,
-        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.z)
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.z)
       );
-      sphere.update(center.toArray(), sceneDims.ballRadius);
+      writeSphereUniforms(0);
       (document.activeElement as HTMLElement)?.blur();
     });
 
@@ -479,7 +534,7 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
   waveSimGui.wave = waveSimFolder
-    .add(waveSim, 'waveResponse', 0.4, 4.0, 0.05)
+    .add(waveSim, 'waveResponse', 0.4, MAX_WAVE_RESPONSE, 0.05)
     .name('Wave response')
     .onChange(() => {
       applyWaveSimulationParams();
@@ -496,7 +551,7 @@ async function init(): Promise<void> {
   applyWaveSimulationParams();
 
   // Initialize sphere position
-  sphere.update(center.toArray(), sceneDims.ballRadius);
+  writeSphereUniforms(0);
 
   // Add initial random ripples
   for (let i = 0; i < 20; i++) {
@@ -571,8 +626,8 @@ async function init(): Promise<void> {
 
   /**
    * Handles pointer down - determines interaction mode.
-   * @param x - Pointer X in canvas device pixels (0 … canvas.width)
-   * @param y - Pointer Y in canvas device pixels (0 … canvas.height)
+   * @param x - Pointer X in canvas device pixels (0 to canvas.width)
+   * @param y - Pointer Y in canvas device pixels (0 to canvas.height)
    * @param button - Pointer button (0=left, 2=right)
    */
   function startDrag(x: number, y: number, button: number): void {
@@ -590,8 +645,8 @@ async function init(): Promise<void> {
     const ray = tracer.getRayForPixel(x, y);
 
     // Check if clicking on sphere (only if visible)
-    const sphereHit = settings.object === 'Sphere'
-      ? Raytracer.hitTestSphere(tracer.eye, ray, center, sceneDims.ballRadius)
+    const sphereHit = objectIsSolid()
+      ? Raytracer.hitTestSphere(tracer.eye, ray, center, effectiveObjectRadius())
       : null;
     if (sphereHit) {
       mode = InteractionMode.MoveSphere;
@@ -645,20 +700,21 @@ async function init(): Promise<void> {
 
       // Update sphere position with bounds checking
       center = center.add(nextHit.subtract(prevHit));
+      const r = effectiveObjectRadius();
       center.x = Math.max(
-        sceneDims.ballRadius - sceneDims.poolHalfExtent,
-        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.x)
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.x)
       );
       center.y = Math.max(
-        sceneDims.ballRadius - sceneDims.poolDepth,
+        r - sceneDims.poolDepth,
         Math.min(10, center.y)
       );
       center.z = Math.max(
-        sceneDims.ballRadius - sceneDims.poolHalfExtent,
-        Math.min(sceneDims.poolHalfExtent - sceneDims.ballRadius, center.z)
+        r - sceneDims.poolHalfExtent,
+        Math.min(sceneDims.poolHalfExtent - r, center.z)
       );
 
-      sphere.update(center.toArray(), sceneDims.ballRadius);
+      writeSphereUniforms(0);
       prevHit = nextHit;
     } else if (mode === InteractionMode.AddDrops) {
       // Add ripples while dragging on water
@@ -708,7 +764,7 @@ async function init(): Promise<void> {
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
 
-    // Track this pointer (device pixels — consistent with Raytracer viewport)
+    // Track this pointer (device pixels - consistent with Raytracer viewport)
     const p = pointerToCanvasDevicePixels(e.clientX, e.clientY);
     activePointers.set(e.pointerId, p);
 
@@ -802,7 +858,7 @@ async function init(): Promise<void> {
   function onResize(): void {
     const isMobile = window.matchMedia('(max-width: 600px)').matches;
     const helpCollapsed = help.classList.contains('collapsed');
-    // Panneau latéral en overlay sur mobile ; sur desktop il réserve la largeur seulement quand il est ouvert
+    // Mobile: help overlay full width. Desktop: reserve space only when help panel is open.
     const width = isMobile
       ? window.innerWidth
       : helpCollapsed
@@ -909,11 +965,12 @@ async function init(): Promise<void> {
         velocity = new Vector();
       } else if (useSpherePhysics) {
         // Apply gravity and buoyancy
+        const r = effectiveObjectRadius();
         const percentUnderWater = Math.max(
           0,
           Math.min(
             1,
-            (sceneDims.ballRadius - center.y) / (2 * sceneDims.ballRadius)
+            (r - center.y) / (2 * r)
           )
         );
 
@@ -942,7 +999,7 @@ async function init(): Promise<void> {
         const distanceFromSurface = Math.abs(center.y);
         const surfaceProximity = Math.max(
           0,
-          1 - distanceFromSurface / sceneDims.ballRadius
+          1 - distanceFromSurface / r
         );
         const baseDamping = 0.5; // Damping rate per second
         const densityDamping = 0.5 * effectiveDensity;
@@ -952,33 +1009,34 @@ async function init(): Promise<void> {
         center = center.add(velocity.multiply(seconds));
 
         // Floor collision
-        if (center.y < sceneDims.ballRadius - sceneDims.poolDepth) {
-          center.y = sceneDims.ballRadius - sceneDims.poolDepth;
+        if (center.y < r - sceneDims.poolDepth) {
+          center.y = r - sceneDims.poolDepth;
           velocity.y = Math.abs(velocity.y) * 0.7; // Bounce with energy loss
         }
-
-        sphere.update(center.toArray(), sceneDims.ballRadius);
       }
 
-      if (settings.object === 'Sphere') {
+      if (objectIsSolid()) {
         // Update water displacement from sphere movement
-        water.moveSphere(oldCenter.toArray(), center.toArray(), sceneDims.ballRadius);
+        water.moveSphere(oldCenter.toArray(), center.toArray(), effectiveObjectRadius());
       }
       oldCenter = center.clone();
 
       // Run water simulation (twice per frame for smoother waves)
       water.stepSimulation();
       water.stepSimulation();
-    } else if (mode === InteractionMode.MoveSphere && settings.object === 'Sphere') {
-      // Simulation paused but user is dragging the sphere — still apply displacement so ripples show
-      water.moveSphere(oldCenter.toArray(), center.toArray(), sceneDims.ballRadius);
+    } else if (mode === InteractionMode.MoveSphere && objectIsSolid()) {
+      // Simulation paused but user is dragging the sphere - still apply displacement so ripples show
+      water.moveSphere(oldCenter.toArray(), center.toArray(), effectiveObjectRadius());
       oldCenter = center.clone();
     }
 
-    // Always derive normals + caustics from the current height texture — even when paused.
+    // Always derive normals + caustics from the current height texture - even when paused.
     // Otherwise addDrop/clicks while paused update height but lighting stays stale until resume.
     water.updateNormals();
     water.updateCaustics();
+
+    // UFO spin + sphere uniforms (every frame so drag/pause/GUI stay in sync)
+    writeSphereUniforms(seconds);
 
     // Update camera uniforms
     updateUniforms();
@@ -1005,7 +1063,7 @@ async function init(): Promise<void> {
 
     // Render scene objects
     pool.render(passEncoder, water.textureA, water.sampler, water.causticsTexture);
-    if (settings.object === 'Sphere') {
+    if (objectIsSolid()) {
       sphere.render(passEncoder, water.textureA, water.sampler, water.causticsTexture);
     }
     water.renderSurface(passEncoder);
