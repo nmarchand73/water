@@ -41,7 +41,7 @@ The site is published at **`https://nmarchand73.github.io/water/`**, so the prod
 
 1. In the repo: **Settings → Pages**.
 2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-3. Push to `main`; the workflow [.github/workflows/pages.yml](.github/workflows/pages.yml) builds with `vite build --base /water/` and deploys the `dist` folder.
+3. Push to `main`; the workflow [.github/workflows/pages.yml](.github/workflows/pages.yml) runs `npm run build:pages` and deploys the `dist` folder.
 
 First deploy may require approving the `github-pages` environment once.
 

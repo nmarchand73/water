@@ -26,8 +26,9 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      # Must match repository name for https://<user>.github.io/<repo>/
-      - run: npm run build -- --base /water/
+      # Use build:pages script — do NOT use `npm run build -- --base /water/` (npm may swallow
+      # --base and run `vite build` with base `/`, breaking https://<user>.github.io/<repo>/).
+      - run: npm run build:pages
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
