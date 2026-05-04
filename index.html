@@ -181,6 +181,12 @@ Released under the MIT license
       .help-body-scroll ul {
         margin: 4px 0;
       }
+      .help-body-scroll code {
+        font-size: 10px;
+        background: #1a1a1a;
+        padding: 1px 4px;
+        border-radius: 2px;
+      }
     </style>
   </head>
   <body class="loading">
@@ -196,25 +202,39 @@ Released under the MIT license
         <a href="https://github.com/jeantimex" target="_blank" rel="noopener noreferrer"
           >jeantimex</a
         >
-      </p>
-      <p>
-        <svg
-          height="16"
-          viewBox="0 0 16 16"
-          width="16"
-          style="fill: currentColor; vertical-align: text-bottom; margin-right: 4px"
-        >
-          <path
-            fill-rule="evenodd"
-            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.58-.18-3.24-.79-3.24-3.5 0-.77.28-1.4.73-1.89-.07-.19-.32-1.1.07-2.27 0 0 .59-.19 1.95.73.57-.16 1.18-.24 1.8-.24.62 0 1.23.08 1.8.24 1.36-.92 1.95-.73 1.95-.73.39 1.17.14 2.08.07 2.27.45.49.73 1.11.73 1.89 0 2.72-1.67 3.32-3.24 3.5.26.22.48.65.48 1.32 0 .96-.01 1.73-.01 1.97 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
-          ></path></svg
-        ><a
+        (upstream:
+        <a
           href="https://github.com/jeantimex/webgpu-water"
           target="_blank"
           rel="noopener noreferrer"
-          >jeantimex/webgpu-water</a
+          >webgpu-water</a
+        >)
+      </p>
+      <p>
+        <strong>This build</strong> is maintained by
+        <a href="https://github.com/nmarchand73" target="_blank" rel="noopener noreferrer"
+          >Nicolas Marchand</a
+        >
+        (<a href="https://github.com/nmarchand73" target="_blank" rel="noopener noreferrer"
+          >@nmarchand73</a
+        >). Source:
+        <a href="https://github.com/nmarchand73/water" target="_blank" rel="noopener noreferrer"
+          >nmarchand73/water</a
+        >
+        · Live:
+        <a href="https://nmarchand73.github.io/water/" target="_blank" rel="noopener noreferrer"
+          >nmarchand73.github.io/water</a
         >
       </p>
+      <h2>Fork updates (Marchand):</h2>
+      <ul>
+        <li>Pointer → water ripples: correct device-pixel ray hit (so clicks make waves)</li>
+        <li>WGSL <code>#include</code> via Vite (no raw imports on entry shaders)</li>
+        <li>Pool / world height scaling aligned in shaders</li>
+        <li>Gravity (G) on by default; optional buoyant sphere physics</li>
+        <li>Help panel: collapsed by default, full scroll, menu toggle (top-right)</li>
+        <li>GitHub Pages deploy with base <code>/water/</code></li>
+      </ul>
       <p>
         This demo requires a browser that supports WebGPU. If you can't run the demo, you can still
         see the original WebGL implementation at
@@ -231,6 +251,7 @@ Released under the MIT license
         <li>Drag the sphere to move it around</li>
         <li>Press the L key to set the light direction</li>
         <li>Press the G key to toggle gravity (on by default)</li>
+        <li>Click the <b>menu</b> icon (top-right) to show or hide this panel</li>
       </ul>
       <h2>Features:</h2>
       <ul>
@@ -260,7 +281,9 @@ Released under the MIT license
           >
           on Flickr</small
         >
-        <small>Last updated: February 10 2026</small>
+        <small
+          >Last updated: May 4, 2026 (fork: Nicolas Marchand / @nmarchand73)</small
+        >
       </p>
       </div>
     </div>
