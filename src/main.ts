@@ -765,6 +765,8 @@ async function init(): Promise<void> {
   const activePointers = new Map<number, { x: number; y: number }>();
   /** Previous pinch distance for zoom calculation */
   let lastPinchDistance = 0;
+  /** Midpoint of two touches — used to orbit when both fingers move together (not only pinch). */
+  let lastTwoFingerCentroid: { x: number; y: number } | null = null;
 
   /**
    * Gets the current viewport as [x, y, width, height].
@@ -945,6 +947,15 @@ async function init(): Promise<void> {
     return Math.sqrt(dx * dx + dy * dy);
   }
 
+  function getTwoFingerCentroid(): { x: number; y: number } | null {
+    if (activePointers.size < 2) return null;
+    const pointers = Array.from(activePointers.values());
+    return {
+      x: (pointers[0].x + pointers[1].x) * 0.5,
+      y: (pointers[0].y + pointers[1].y) * 0.5,
+    };
+  }
+
   // Pointer event listeners (unified mouse/touch/pen input)
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button === 1) return; // Ignore middle click
@@ -955,10 +966,11 @@ async function init(): Promise<void> {
     const p = pointerToCanvasDevicePixels(e.clientX, e.clientY);
     activePointers.set(e.pointerId, p);
 
-    // If this is the second finger, switch to pinch mode and record initial distance
+    // If this is the second finger, switch to pinch + two-finger orbit (centroid drag)
     if (activePointers.size === 2) {
       mode = InteractionMode.None; // Cancel any single-finger interaction
       lastPinchDistance = getPinchDistance();
+      lastTwoFingerCentroid = getTwoFingerCentroid();
       return;
     }
 
@@ -983,8 +995,17 @@ async function init(): Promise<void> {
         activePointers.set(e.pointerId, p);
       }
 
-      // Handle pinch-to-zoom with two fingers
+      // Two fingers: orbit from centroid movement + pinch-to-zoom from distance change
       if (activePointers.size === 2) {
+        const c = getTwoFingerCentroid();
+        if (c && lastTwoFingerCentroid) {
+          targetAngleY -= c.x - lastTwoFingerCentroid.x;
+          targetAngleX -= c.y - lastTwoFingerCentroid.y;
+          targetAngleX = Math.max(-89.999, Math.min(89.999, targetAngleX));
+        }
+        if (c) {
+          lastTwoFingerCentroid = c;
+        }
         const currentDistance = getPinchDistance();
         if (lastPinchDistance > 0) {
           const delta = lastPinchDistance - currentDistance;
@@ -1008,9 +1029,10 @@ async function init(): Promise<void> {
     canvas.releasePointerCapture(e.pointerId);
     activePointers.delete(e.pointerId);
 
-    // Reset pinch state
+    // Reset pinch / two-finger orbit state
     if (activePointers.size < 2) {
       lastPinchDistance = 0;
+      lastTwoFingerCentroid = null;
     }
 
     // Pinch ended but one finger still down — otherwise mode stays None until retouch (mobile bug).
@@ -1031,6 +1053,7 @@ async function init(): Promise<void> {
 
     if (activePointers.size < 2) {
       lastPinchDistance = 0;
+      lastTwoFingerCentroid = null;
     }
 
     if (countBefore === 2 && activePointers.size === 1) {
