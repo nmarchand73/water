@@ -837,24 +837,44 @@ export class Water {
     this.device.queue.submit([encoder.finish()]);
   }
 
+  /** Minimum simulation UV step — use for foam / derivative sampling in shaders. */
+  getWaterTexel(): number {
+    return Math.min(1 / this.width, 1 / this.height);
+  }
+
   /**
    * Updates the water rendering uniform buffer.
    *
    * @param density - Water density (absorption coefficient)
    * @param causticIntensity - Intensity of caustics
    * @param ior - Index of refraction
-   * @param fresnelMin - Minimum fresnel reflection
+   * @param fresnelMin - Minimum fresnel reflection (artistic floor)
+   * @param surfaceRoughness - Environment reflection blur / sun softness (0–1)
+   * @param foamStrength - Laplacian foam amount (0–1)
+   * @param waterTexel - min(1/w,1/h) for height-field derivatives
    */
   updateWaterParameters(
     density: number,
     causticIntensity: number,
     ior: number,
-    fresnelMin: number
+    fresnelMin: number,
+    surfaceRoughness: number,
+    foamStrength: number,
+    waterTexel: number
   ): void {
     this.device.queue.writeBuffer(
       this.waterUniformBuffer,
       0,
-      new Float32Array([density, causticIntensity, ior, fresnelMin])
+      new Float32Array([
+        density,
+        causticIntensity,
+        ior,
+        fresnelMin,
+        surfaceRoughness,
+        foamStrength,
+        waterTexel,
+        0,
+      ])
     );
   }
 }

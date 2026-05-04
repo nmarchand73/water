@@ -218,9 +218,9 @@ async function init(): Promise<void> {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // Water rendering uniforms (density, causticIntensity, ior, fresnelMin)
+  // Water rendering uniforms — see WaterUniforms in bindings.wgsl (32 bytes)
   const waterUniformBuffer = device.createBuffer({
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -419,6 +419,8 @@ async function init(): Promise<void> {
     causticsIntensity: 0.2,
     ior: 1.333,
     fresnelMin: 0.25,
+    surfaceRoughness: 0.12,
+    foamStrength: 0.55,
     linerPreset: defaultLiner.label,
   };
 
@@ -681,6 +683,20 @@ async function init(): Promise<void> {
       (document.activeElement as HTMLElement)?.blur();
     });
 
+  waterFolder
+    .add(settings, 'surfaceRoughness', 0.0, 1.0, 0.01)
+    .name('Surface roughness')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
+  waterFolder
+    .add(settings, 'foamStrength', 0.0, 1.5, 0.01)
+    .name('Foam')
+    .onChange(() => {
+      (document.activeElement as HTMLElement)?.blur();
+    });
+
   waveSimGui.inject = waveSimFolder
     .add(waveSim, 'sphereInject', 0.02, 0.28, 0.005)
     .name('Sphere injection')
@@ -784,8 +800,14 @@ async function init(): Promise<void> {
    * @param x - Pointer X in canvas device pixels (0 to canvas.width)
    * @param y - Pointer Y in canvas device pixels (0 to canvas.height)
    * @param button - Pointer button (0=left, 2=right)
+   * @param options.suppressInitialWaterDrop - After a pinch, resume water-drag without a splash on lift.
    */
-  function startDrag(x: number, y: number, button: number): void {
+  function startDrag(
+    x: number,
+    y: number,
+    button: number,
+    options?: { suppressInitialWaterDrop?: boolean }
+  ): void {
     oldX = x;
     oldY = y;
 
@@ -820,16 +842,26 @@ async function init(): Promise<void> {
     ) {
       // Click is within water bounds (addDrop uses normalized [-1, 1] UV space)
       mode = InteractionMode.AddDrops;
-      water.addDrop(
-        pointOnPlane.x / sceneDims.poolHalfExtent,
-        pointOnPlane.z / sceneDims.poolHalfExtent,
-        0.03,
-        0.01
-      );
+      if (!options?.suppressInitialWaterDrop) {
+        water.addDrop(
+          pointOnPlane.x / sceneDims.poolHalfExtent,
+          pointOnPlane.z / sceneDims.poolHalfExtent,
+          0.03,
+          0.01
+        );
+      }
     } else {
       // Click is outside water - orbit camera
       mode = InteractionMode.OrbitCamera;
     }
+  }
+
+  /** When lifting one finger after a two-finger pinch, the remaining touch must get a fresh hit-test. */
+  function resumeSinglePointerAfterPinch(): void {
+    if (activePointers.size !== 1) return;
+    const p = activePointers.values().next().value;
+    if (!p) return;
+    startDrag(p.x, p.y, 0, { suppressInitialWaterDrop: true });
   }
 
   /**
@@ -938,38 +970,52 @@ async function init(): Promise<void> {
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  canvas.addEventListener('pointermove', (e) => {
-    const p = pointerToCanvasDevicePixels(e.clientX, e.clientY);
-    // Update pointer position in our tracking map
-    if (activePointers.has(e.pointerId)) {
-      activePointers.set(e.pointerId, p);
-    }
-
-    // Handle pinch-to-zoom with two fingers
-    if (activePointers.size === 2) {
-      const currentDistance = getPinchDistance();
-      if (lastPinchDistance > 0) {
-        const delta = lastPinchDistance - currentDistance;
-        targetDistance += delta * 0.01;
-        targetDistance = Math.max(1.5, Math.min(10, targetDistance));
+  canvas.addEventListener(
+    'pointermove',
+    (e) => {
+      const p = pointerToCanvasDevicePixels(e.clientX, e.clientY);
+      // Reduce browser gestures (scroll/pull-to-refresh) stealing the gesture while dragging or pinching.
+      if (mode !== InteractionMode.None || activePointers.size >= 2) {
+        e.preventDefault();
       }
-      lastPinchDistance = currentDistance;
-      return;
-    }
+      // Update pointer position in our tracking map
+      if (activePointers.has(e.pointerId)) {
+        activePointers.set(e.pointerId, p);
+      }
 
-    // Single pointer drag
-    if (mode !== InteractionMode.None && activePointers.size === 1) {
-      duringDrag(p.x, p.y);
-    }
-  });
+      // Handle pinch-to-zoom with two fingers
+      if (activePointers.size === 2) {
+        const currentDistance = getPinchDistance();
+        if (lastPinchDistance > 0) {
+          const delta = lastPinchDistance - currentDistance;
+          targetDistance += delta * 0.01;
+          targetDistance = Math.max(1.5, Math.min(10, targetDistance));
+        }
+        lastPinchDistance = currentDistance;
+        return;
+      }
+
+      // Single pointer drag
+      if (mode !== InteractionMode.None && activePointers.size === 1) {
+        duringDrag(p.x, p.y);
+      }
+    },
+    { passive: false }
+  );
 
   canvas.addEventListener('pointerup', (e) => {
+    const countBefore = activePointers.size;
     canvas.releasePointerCapture(e.pointerId);
     activePointers.delete(e.pointerId);
 
     // Reset pinch state
     if (activePointers.size < 2) {
       lastPinchDistance = 0;
+    }
+
+    // Pinch ended but one finger still down — otherwise mode stays None until retouch (mobile bug).
+    if (countBefore === 2 && activePointers.size === 1) {
+      resumeSinglePointerAfterPinch();
     }
 
     // Only fully stop drag when all pointers are released
@@ -979,11 +1025,16 @@ async function init(): Promise<void> {
   });
 
   canvas.addEventListener('pointercancel', (e) => {
+    const countBefore = activePointers.size;
     canvas.releasePointerCapture(e.pointerId);
     activePointers.delete(e.pointerId);
 
     if (activePointers.size < 2) {
       lastPinchDistance = 0;
+    }
+
+    if (countBefore === 2 && activePointers.size === 1) {
+      resumeSinglePointerAfterPinch();
     }
 
     if (activePointers.size === 0) {
@@ -1133,13 +1184,16 @@ async function init(): Promise<void> {
       updateLight();
     }
 
-    // Update water rendering uniforms (density, caustics, IOR, fresnel)
+    // Update water rendering uniforms (see WaterUniforms in bindings.wgsl)
     // Do this before simulation steps so caustics update uses correct values
     water.updateWaterParameters(
       settings.useDensity ? effectiveObjectDensity() : 0.0,
       settings.causticsIntensity,
       settings.ior,
-      settings.fresnelMin
+      settings.fresnelMin,
+      settings.surfaceRoughness,
+      settings.foamStrength,
+      water.getWaterTexel()
     );
 
     if (!paused) {

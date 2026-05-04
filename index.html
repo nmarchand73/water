@@ -233,39 +233,56 @@ Released under the MIT license
         free surface moves; the bulk flow inside the water volume is not simulated.
       </p>
       <p>
-        Each step averages the four cardinal neighbors. On a square grid, that average matches the usual
-        <b>five-point stencil</b> for the horizontal Laplacian: it approximates the sum of second
-        partials (d^2 h / dx^2 + d^2 h / dz^2) up to scaling. The shader adds (neighbor average minus
-        local h) into velocity with gain <b>Wave response</b>, then advances height by integrating
-        velocity. That is <b>explicit</b> integration of neighbor coupling (same structure as a discrete
-        wave / diffusion formulation; compare to a leapfrog or implicit scheme in a PDE course). If the
-        gain is too large, the timestep can blow up; the shader clamps curvature and velocity so the
-        slider stays usable across its range.
-        <b>Velocity damping</b> plays the role of viscosity and energy leaving the finite domain.
+        Each integration step uses the four <b>cardinal</b> neighbors only (a <b>five-point stencil</b>
+        for the horizontal Laplacian on a square grid: same scaling as d^2h/dx^2 + d^2h/dz^2 in the
+        continuum limit). Samples outside the simulation texture are read back using <b>mirrored UVs</b>
+        at the pool rim so the boundary behaves like a reflecting wall instead of a fixed zero height.
       </p>
       <p>
-        Ripples and the moving sphere/UFO apply forcing in other passes. Two textures <b>ping-pong</b>:
-        render from texture A to B, swap A and B, repeat.
+        The coupling term is (neighbor average − local height): that quantity is scaled by
+        <b>Wave response</b> and accumulated into the velocity channel, then height is updated by
+        explicit integration in time. The frame runs <b>several substeps</b> (see Settings → Wave
+        simulation); each substep uses the same discrete coupling gain, <i>not</i> rescaled by variable
+        frame duration, so a browser hitch does not suddenly inject extra energy into the height field.
+        Because an explicit scheme would diverge if the gain were too large, the shader <b>limits the
+        Laplacian drive per step</b> (curvature clamp), clamps velocity, and caps simulated height. The
+        separate sphere/UFO pass also limits how much height can change in one go from the moving solid.
+        <b>Velocity damping</b> removes energy (model viscosity and losses).
+      </p>
+      <p>
+        User ripples and the solid apply forcing in other render passes. Two textures <b>ping-pong</b>:
+        draw from A into B, swap, repeat.
       </p>
 
       <h2>Floating object</h2>
       <p>
         With gravity, buoyancy uses <b>Archimedes' principle</b> in a blended form: the net vertical
-        force is driven by the <b>fraction of the sphere below the water plane y = 0</b>, as if
+        force is driven by the <b>fraction of the volume below the water plane y = 0</b>, as if
         buoyant force rho_water g V_sub and weight rho_body g V swap roles by a smooth interpolation.
-        The <b>density</b> control changes that balance (heavier object vs water). The fluid does not
-        receive reaction forces from the solid (no coupled fluid-solid time stepping), so this is a
-        one-way model for real-time motion, not a research CFD solve.
+        <b>Interior</b> (Air-filled, Solid, Dense, Custom) picks preset body density relative to water
+        for the ball or UFO mesh; <b>Custom</b> exposes the density slider. Default interior is
+        <b>Solid</b> so the object behaves like a uniform solid unless you choose air-filled or another
+        preset. The <b>density</b> slider applies when you fine-tune Custom. The fluid does not exert
+        reaction forces on the solid (no two-way fluid–solid coupling), so this stays a real-time
+        demo model, not a research CFD solve.
       </p>
 
       <h2>Rendering &amp; optics</h2>
       <p>
-        The air-water interface is treated with geometric optics. <b>Snell's law</b> ties incident and
-        refracted ray directions: n1 sin t1 = n2 sin t2 for indices n1, n2 (air ~1.0, water IOR about
-        1.33). The shader traces refracted rays for underwater lookup. <b>Fresnel</b> weighting splits
-        energy between reflected and transmitted paths as a function of angle (Schlick-style terms are
-        common in graphics; behavior you know from intro physics: more mirror-like at grazing incidence).
-        Reflections mix sky cubemap and scene color.
+        The air-water interface uses geometric optics. <b>Snell's law</b> ties incident and refracted
+        directions (n1 sin θ1 = n2 sin θ2). Underwater tinting traces refracted rays into the pool.
+        Settings → Water: <b>Refraction</b> is the water index of refraction (≈1.33); <b>Reflection</b>
+        sets a minimum reflectance so the surface stays visibly glossy when viewed straight on (on top of
+        physics-based Fresnel). <b>Fresnel</b> blending uses Schlick’s approximation with <b>F0</b>
+        computed from that IOR at normal incidence; grazing angles still trend toward full reflection.
+      </p>
+      <p>
+        The sky is a <b>cubemap</b>; scene geometry appears in traced rays. <b>Surface roughness</b>
+        widens the sun glint (specular exponent ramps from soft to very sharp) and blurs the reflected
+        sky by averaging a few directions around the reflection vector — there is no mip pyramid on the
+        cubemap, so this is a cheap stand-in for glossy env sampling. <b>Foam</b> scales a white mix
+        driven by the discrete 5-point <b>Laplacian</b> of the height field (high curvature → brighter
+        foam), not a separate fluid spray simulation.
       </p>
       <p>
         <b>Caustics</b> are focused irradiance on the pool floor: the wavy surface refracts parallel
@@ -302,29 +319,34 @@ Released under the MIT license
         On the light side, <b>path tracing</b> or photon mapping could replace analytic caustics;
         <b>volumetric</b> multiple scattering and in-beam light stages would go beyond the screen-space
         Beer-Lambert hint you can tune in Settings. <b>Dispersion</b>-correct water waves
-        (frequency-dependent speed) and <b>foam / spray</b> from sheet breakup would need extra passes
-        or particles. Grid resolution could jump by orders of magnitude with <b>adaptive refinement</b>
-        near the object and shore.
+        (frequency-dependent speed) and <b>three-dimensional foam / spray</b> from sheet breakup and
+        entrained air would still need extra passes or particles beyond the height-field curvature hint.
+        Grid resolution could jump by orders of magnitude with <b>adaptive refinement</b> near the object
+        and shore.
       </p>
 
       <h2>Controls</h2>
       <ul>
-        <li>Draw on the water: ripples</li>
-        <li>Drag background or <b>right-drag</b>: orbit camera, <b>Wheel</b>: zoom</li>
-        <li><b>Space</b>: pause, <b>G</b>: gravity, <b>L</b> (hold): light from view</li>
-        <li>Drag sphere / UFO, <b>Settings</b>: object, water (caustics, depth absorption, IOR), pool, wave tuning</li>
+        <li><b>Pointer / touch</b> on the water: ripples; drag to paint ripples</li>
+        <li><b>Drag</b> empty space: orbit camera; <b>Right-drag</b> (mouse): orbit</li>
+        <li><b>Mouse wheel</b>: zoom; <b>two-finger pinch</b> on trackpad or touchscreen: zoom</li>
+        <li><b>Touch</b>: one finger moves the scene like the mouse; after a pinch, lifting one finger
+          resumes orbit or water drag under the remaining touch</li>
+        <li><b>Space</b>: pause · <b>G</b>: gravity · <b>L</b> (hold): lock light to camera view</li>
+        <li>Drag the sphere or UFO; <b>Settings</b>: object (shape, interior, density); water
+          (refraction IOR, reflection floor, caustics, surface roughness, foam, depth absorption); pool;
+          wave simulation</li>
         <li><b>Menu</b> (top-right): show or hide this panel</li>
       </ul>
       <p>
         <small
-          >Tile texture:
+          >Pool tile texture:
           <a
             href="http://www.flickr.com/photos/zooboing/3682834083/"
             target="_blank"
             rel="noopener noreferrer"
-            >zooboing</a
-          >
-          , May 4, 2026</small
+            >zooboing / Flickr</a
+          ></small
         >
       </p>
       </div>

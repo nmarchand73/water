@@ -87,3 +87,16 @@ fn clampWaterSimRg(info : vec4f) -> vec4f {
     info.a
   );
 }
+
+// Normal-incidence reflectance for air–water (incident from air, transmitted IOR = water/n_air).
+fn reflectanceF0AirWater(iorWater : f32) -> f32 {
+  let r = (1.0 - iorWater) / (1.0 + iorWater);
+  return r * r;
+}
+
+fn schlickFresnelReflectance(cosTheta : f32, f0 : f32) -> f32 {
+  let ct = clamp(cosTheta, 0.0, 1.0);
+  let om = 1.0 - ct;
+  let om5 = om * om * om * om * om;
+  return f0 + (1.0 - f0) * om5;
+}

@@ -33,6 +33,10 @@ struct WaterUniforms {
     causticIntensity : f32,
     ior : f32,
     fresnelMin : f32,
+    surfaceRoughness : f32,
+    foamStrength : f32,
+    waterTexel : f32,
+    _pad : f32,
 }
 
 // Pool uniforms (camera matrices and eye position)

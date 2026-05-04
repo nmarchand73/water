@@ -146,6 +146,33 @@ fn getWallColor(point: vec3f, IOR_AIR: f32, IOR_WATER: f32, poolHeight: f32) -> 
     return wallColor * scale;
 }
 
+// Cubemap has no mips — approximate reflection blur by multi-tap cone sampling.
+fn sampleSkyRough(rayDir : vec3f) -> vec3f {
+  let rough = clamp(waterUniforms.surfaceRoughness, 0.0, 1.0);
+  let c0 = textureSampleLevel(skyTexture, skySampler, rayDir, 0.0).rgb;
+  if (rough < 0.002) {
+    return c0;
+  }
+  let spread = rough * 0.16;
+  let aux = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(rayDir.y) < 0.98);
+  let t = normalize(cross(rayDir, aux));
+  let b = normalize(cross(t, rayDir));
+  let c1 = textureSampleLevel(skyTexture, skySampler, normalize(rayDir + t * spread), 0.0).rgb;
+  let c2 = textureSampleLevel(skyTexture, skySampler, normalize(rayDir - t * spread), 0.0).rgb;
+  let c3 = textureSampleLevel(skyTexture, skySampler, normalize(rayDir + b * spread * 0.85), 0.0).rgb;
+  return (c0 + c1 + c2 + c3) * 0.25;
+}
+
+fn sunSpecularOnSkyRay(ray : vec3f) -> vec3f {
+  let sunDir = normalize(light.direction);
+  let mu = max(0.0, dot(sunDir, ray));
+  let rough = clamp(waterUniforms.surfaceRoughness, 0.0, 1.0);
+  let expSun = mix(96.0, 5200.0, (1.0 - rough) * (1.0 - rough));
+  let spec = pow(mu, expSun);
+  let sunBoost = mix(0.42, 1.0, 1.0 - rough);
+  return vec3f(spec) * vec3f(10.0, 8.0, 6.0) * sunBoost * 0.095;
+}
+
 // Traces a ray from water surface to find color
 fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
     var color : vec3f;
@@ -190,10 +217,8 @@ fn getSurfaceRayColor(origin: vec3f, ray: vec3f, waterColor: vec3f) -> vec3f {
             color = getWallColor(hit, IOR_AIR, IOR_WATER, poolHeight);
         } else {
             waterPath = min(t.y * 0.35, poolHeight * 2.5);
-            color = textureSampleLevel(skyTexture, skySampler, ray, 0.0).rgb;
-            let sunDir = normalize(light.direction);
-            let spec = pow(max(0.0, dot(sunDir, ray)), 5000.0);
-            color += vec3f(spec) * vec3f(10.0, 8.0, 6.0);
+            color = sampleSkyRough(ray);
+            color += sunSpecularOnSkyRay(ray);
         }
     }
 
@@ -226,12 +251,28 @@ fn fs_main(@location(0) worldPos : vec3f) -> @location(0) vec4f {
     // ABOVE WATER VIEW: Looking down at water surface
     let reflectedRay = reflect(incomingRay, normal);
     let refractedRay = refract(incomingRay, normal, IOR_AIR / waterUniforms.ior);
-    let fresnel = mix(waterUniforms.fresnelMin, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
+    let cosTheta = max(dot(normal, -incomingRay), 0.0);
+    let f0phys = reflectanceF0AirWater(waterUniforms.ior);
+    let sch = schlickFresnelReflectance(cosTheta, f0phys);
+    let fresnel = max(sch, waterUniforms.fresnelMin);
 
     let reflectedColor = getSurfaceRayColor(worldPos, reflectedRay, scene.aboveTint.rgb);
     let refractedColor = getSurfaceRayColor(worldPos, refractedRay, scene.aboveTint.rgb);
 
     var finalColor = mix(refractedColor, reflectedColor, fresnel);
+
+    let texel = waterUniforms.waterTexel;
+    let du = vec2f(texel, 0.0);
+    let dv = vec2f(0.0, texel);
+    let h0 = info.r;
+    let hxp = textureSampleLevel(waterTexture, waterSampler, uv + du, 0.0).r;
+    let hxn = textureSampleLevel(waterTexture, waterSampler, uv - du, 0.0).r;
+    let hzp = textureSampleLevel(waterTexture, waterSampler, uv + dv, 0.0).r;
+    let hzn = textureSampleLevel(waterTexture, waterSampler, uv - dv, 0.0).r;
+    let lap = abs(4.0 * h0 - hxp - hxn - hzp - hzn);
+    let foamAmt = clamp(lap * 65.0 * waterUniforms.foamStrength, 0.0, 1.0);
+    finalColor = mix(finalColor, vec3f(0.93, 0.96, 0.99), foamAmt);
+
     // Only darken when the camera is underwater (same pass can be used near the surface)
     let eyeInfo = textureSampleLevel(waterTexture, waterSampler, poolXZToUv(commonUniforms.eyePosition.xz, scene.poolHalfExtent), 0.0);
     let eyeWaterY = waterHeightWorld(eyeInfo.r, scene.poolHalfExtent);
